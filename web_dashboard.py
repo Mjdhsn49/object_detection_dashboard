@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""
+Web Dashboard for Object Detection on RTMP Streams
+"""
+
+import os
+import sys
+import time
+import cv2
+import numpy as np
+import threading
+import json
+import base64
+from pathlib import Path
+from flask import Flask, render_template, request, jsonify, Response
+from flask_socketio import SocketIO, emit
+import queue
+import logging
+import torch
+import requests
+
+# Set OpenMP environment variable
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
+# Add src to Python path
+sys.path.append(str(Path(__file__).resolve().parent))
+
+# Import detection modules
+try:
+    from src.models import ObjectDetector, DepthEstimator
+    from src.utils.bbox3d_utils import BBox3DEstimator, BirdEyeView
+    from configs.default_config import Config
+    DETECTION_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Detection modules not available: {e}")
+    DETECTION_AVAILABLE = False
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'object-detection-dashboard-2024'
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Global variables
+stream_processors = {}  # key: stream_path, value: StreamProcessor
+detection_threads = {}  # key: stream_path, value: Thread
+stop_detection_flags = {}  # key: stream_path, value: bool
+current_configs = {}  # key: stream_path, value: config
+
+class StreamProcessor:
+    def __init__(self):
+        self.cap = None
+        self.detector = None
+        self.depth_estimator = None
+        self.bbox3d_estimator = None
+        self.bev = None
+        self.config = None
+        self.is_running = False
+        
+    def initialize_models(self, config):
+        """Initialize detection models."""
+        if not DETECTION_AVAILABLE:
+            return False
+        try:
+            self.config = config
+            device = config.get('device', 'cpu')
+            if device == 'auto':
+                if torch.cuda.is_available():
+                    device = 'cuda'
+                    print("CUDA is available! Using GPU for all models.")
+                    print(f"GPU: {torch.cuda.get_device_name(0)}")
+                    torch.backends.cudnn.benchmark = True
+                    torch.backends.cudnn.deterministic = False
+                else:
+                    device = 'cpu'
+                    print("CUDA is not available. Using CPU for all models.")
+            print(f"Initializing models on device: {device}")
+            # Only allow three local models (relative paths for Docker)
+            allowed_models = [
+                'data/other_models/default_model/yolov8n.pt',
+                'data/other_models/cross_model/weights/best.pt',
+                'data/other_models/Infrared/weights/best.onnx'
+            ]
+            model_path = config.get('model', allowed_models[0])
+            if model_path not in allowed_models:
+                print(f"Model {model_path} not allowed. Using default model.")
+                model_path = allowed_models[0]
+            try:
+                self.detector = ObjectDetector(
+                    model_size=model_path,
+                    conf_thres=config.get('confidence', 0.25),
+                    iou_thres=config.get('iou', 0.45),
+                    classes=None,
+                    device=device
+                )
+                print("✅ Object detector initialized successfully")
+            except Exception as e:
+                print(f"Error initializing object detector: {e}")
+                print("Falling back to CPU for object detection")
+                self.detector = ObjectDetector(
+                    model_size=allowed_models[0],
+                    conf_thres=config.get('confidence', 0.25),
+                    iou_thres=config.get('iou', 0.45),
+                    classes=None,
+                    device='cpu'
+                )
+            
+            # Initialize depth estimator
+            try:
+                self.depth_estimator = DepthEstimator(
+                    model_type=config.get('depth_model', 'midas'),
+                    model_size=config.get('depth_size', 'small'),
+                    device=device
+                )
+                print("✅ Depth estimator initialized successfully")
+            except Exception as e:
+                print(f"Error initializing depth estimator: {e}")
+                print("Falling back to CPU for depth estimation")
+                self.depth_estimator = DepthEstimator(
+                    model_type=config.get('depth_model', 'midas'),
+                    model_size=config.get('depth_size', 'small'),
+                    device='cpu'
+                )
+            
+            # Initialize 3D bounding box estimator
+            self.bbox3d_estimator = BBox3DEstimator()
+            print("✅ 3D bounding box estimator initialized")
+            
+            # Initialize Bird's Eye View
+            if config.get('enable_bev', True):
+                self.bev = BirdEyeView(scale=60, size=(300, 300))
+                print("✅ Bird's Eye View initialized")
+                
+            return True
+            
+        except Exception as e:
+            print(f"Error initializing models: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def open_stream(self, rtmp_url):
+        """Open RTMP stream."""
+        try:
+            # Release previous capture if exists
+            if self.cap is not None:
+                self.cap.release()
+            self.cap = cv2.VideoCapture()
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1024)
+            
+            if not self.cap.open(rtmp_url):
+                raise RuntimeError(f"Failed to open stream: {rtmp_url}")
+                
+            return True
+            
+        except Exception as e:
+            print(f"Error opening stream: {e}")
+            return False
+    
+    def process_frame(self, frame):
+        """Process a single frame with detection."""
+        if not DETECTION_AVAILABLE or not self.detector:
+            return frame
+            
+        try:
+            # Make copies for different visualizations
+            original_frame = frame.copy()
+            detection_frame = frame.copy()
+            result_frame = frame.copy()
+            
+            # Object Detection
+            detection_frame, detections = self.detector.detect(
+                detection_frame, 
+                track=self.config.get('enable_tracking', True)
+            )
+            
+            # Depth Estimation
+            depth_colored = None
+            if self.config.get('show_depth', True):
+                try:
+                    depth_map = self.depth_estimator.estimate_depth(
+                        original_frame,
+                        depth_range=self.config.get('depth_range', [1.0, 50.0]),
+                        smooth=self.config.get('smooth_depth', True)
+                    )
+                    depth_colored = self.depth_estimator.colorize_depth(
+                        depth_map,
+                        depth_range=self.config.get('depth_range', [1.0, 50.0])
+                    )
+                except Exception as e:
+                    print(f"Depth estimation error: {e}")
+            
+            # Process detections
+            boxes_3d = []
+            active_ids = []
+            
+            for detection in detections:
+                try:
+                    bbox, score, class_id, obj_id = detection
+                    class_name = self.detector.get_class_names()[class_id]
+                    
+                    # Get depth in the region
+                    if self.depth_estimator and depth_colored is not None:
+                        depth_value = self.depth_estimator.get_depth_in_region(
+                            depth_map, bbox, method='median'
+                        )
+                    else:
+                        depth_value = 0.0
+                    
+                    box_3d = {
+                        'bbox_2d': bbox,
+                        'depth_value': depth_value,
+                        'class_name': class_name,
+                        'object_id': obj_id,
+                        'score': score
+                    }
+                    boxes_3d.append(box_3d)
+                    
+                    if obj_id is not None:
+                        active_ids.append(obj_id)
+                        
+                except Exception as e:
+                    print(f"Error processing detection: {e}")
+                    continue
+            
+            # Clean up trackers
+            if self.bbox3d_estimator:
+                self.bbox3d_estimator.cleanup_trackers(active_ids)
+            
+            # Visualize results
+            result_frame = self.visualize_results(result_frame, boxes_3d, depth_colored)
+            
+            return result_frame
+            
+        except Exception as e:
+            print(f"Error processing frame: {e}")
+            import traceback
+            traceback.print_exc()
+            return frame
+    
+    def visualize_results(self, frame, boxes_3d, depth_colored):
+        """Visualize detection results."""
+        height, width = frame.shape[:2]
+        
+        # Draw detection boxes
+        for box_3d in boxes_3d:
+            try:
+                color = (0, 255, 0)  # Green
+                bbox = box_3d['bbox_2d']
+                depth = box_3d['depth_value']
+                obj_id = box_3d['object_id']
+                score = box_3d['score']
+                
+                # Draw bounding box
+                x1, y1, x2, y2 = map(int, bbox)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                
+                # Draw text
+                if obj_id is not None:
+                    text = f"ID:{int(obj_id)} {score:.2f}"
+                else:
+                    text = f"{score:.2f}"
+                
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                cv2.rectangle(frame, 
+                            (x1, y1 - text_size[1] - 8), 
+                            (x1 + text_size[0] + 4, y1 - 4), 
+                            color, -1)
+                cv2.putText(frame, text, (x1 + 2, y1 - 6), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                
+                # Draw depth value
+                if self.config.get('show_depth', True):
+                    depth_text = f"{depth:.1f}m"
+                    text_size = cv2.getTextSize(depth_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                    cv2.rectangle(frame,
+                                (x1, y2 + 2),
+                                (x1 + text_size[0], y2 + text_size[1] + 6),
+                                color, -1)
+                    cv2.putText(frame, depth_text, (x1, y2 + text_size[1] + 2), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    
+            except Exception as e:
+                print(f"Error drawing box: {e}")
+                continue
+        
+        # Draw Bird's Eye View
+        if self.bev is not None and self.config.get('enable_bev', True):
+            try:
+                self.bev.reset()
+                for box_3d in boxes_3d:
+                    self.bev.draw_box(box_3d)
+                bev_image = self.bev.get_image()
+                
+                bev_height = height // 4
+                bev_width = bev_height
+                
+                if bev_height > 0 and bev_width > 0:
+                    bev_resized = cv2.resize(bev_image, (bev_width, bev_height))
+                    frame[height - bev_height:height, 0:bev_width] = bev_resized
+                    cv2.rectangle(frame, 
+                                (0, height - bev_height), 
+                                (bev_width, height), 
+                                (255, 255, 255), 1)
+                    cv2.putText(frame, "Bird's Eye View", 
+                               (10, height - bev_height + 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            except Exception as e:
+                print(f"Error drawing BEV: {e}")
+        
+        # Add depth visualization
+        if depth_colored is not None and self.config.get('show_depth', True):
+            try:
+                depth_height = height // 4
+                depth_width = int(depth_height * width / height)
+                depth_resized = cv2.resize(depth_colored, (depth_width, depth_height))
+                frame[0:depth_height, 0:depth_width] = depth_resized
+            except Exception as e:
+                print(f"Error adding depth map: {e}")
+        
+        return frame
+    
+    def run_detection(self, rtmp_url, config, stop_flag_key):
+        """Main detection loop."""
+        global stop_detection_flags
+        
+        try:
+            # Initialize models
+            if not self.initialize_models(config):
+                socketio.emit('error', {'message': 'Failed to initialize detection models'})
+                return
+            
+            # Open stream
+            if not self.open_stream(rtmp_url):
+                socketio.emit('error', {'message': f'Failed to open stream: {rtmp_url}'})
+                return
+            
+            socketio.emit('status', {'message': f'Detection started successfully for {rtmp_url}'})
+            self.is_running = True
+            
+            frame_count = 0
+            start_time = time.time()
+            
+            while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("Failed to read frame from stream")
+                    time.sleep(0.1)
+                    continue
+                
+                # Process frame
+                processed_frame = self.process_frame(frame)
+                
+                # Calculate FPS
+                frame_count += 1
+                if frame_count % 30 == 0:
+                    elapsed_time = time.time() - start_time
+                    fps = frame_count / elapsed_time
+                    socketio.emit('fps_update', {'fps': f'{fps:.1f}', 'stream_path': stop_flag_key})
+                
+                # Encode frame for web display
+                try:
+                    # Resize frame for web display
+                    height, width = processed_frame.shape[:2]
+                    max_width = 800
+                    if width > max_width:
+                        scale = max_width / width
+                        new_width = int(width * scale)
+                        new_height = int(height * scale)
+                        processed_frame = cv2.resize(processed_frame, (new_width, new_height))
+                    
+                    # Encode to JPEG
+                    _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    frame_data = base64.b64encode(buffer).decode('utf-8')
+                    
+                    # Send frame to web client with stream_path
+                    socketio.emit('frame', {'image': frame_data, 'stream_path': stop_flag_key})
+                    
+                except Exception as e:
+                    print(f"Error encoding frame: {e}")
+                
+                # Small delay to control frame rate
+                time.sleep(0.033)  # ~30 FPS
+                
+        except Exception as e:
+            print(f"Error in detection loop: {e}")
+            socketio.emit('error', {'message': f'Detection error: {str(e)}', 'stream_path': stop_flag_key})
+        
+        finally:
+            self.cleanup()
+    
+    def cleanup(self):
+        """Clean up resources."""
+        self.is_running = False
+        if self.cap:
+            self.cap.release()
+        socketio.emit('status', {'message': 'Detection stopped'})
+
+@app.route('/')
+def index():
+    """Main dashboard page."""
+    return render_template('dashboard.html')
+
+@app.route('/api/start_detection', methods=['POST'])
+def start_detection():
+    """Start detection on RTMP stream (multi-stream support)."""
+    global stream_processors, detection_threads, stop_detection_flags, current_configs
+    try:
+        data = request.get_json()
+        rtmp_url = data.get('rtmp_url')
+        stream_path = data.get('stream_path')  # unique key for the stream
+        confidence = float(data.get('confidence', 0.25))
+        iou = float(data.get('iou', 0.45))
+        model = data.get('model', '/Users/majeed/Downloads/yolo3d/yolov8n.pt')
+        if not rtmp_url or not stream_path:
+            return jsonify({'error': 'RTMP URL and stream_path are required'}), 400
+        # Stop any existing detection for this stream
+        stop_detection_flags[stream_path] = True
+        if stream_path in detection_threads and detection_threads[stream_path].is_alive():
+            detection_threads[stream_path].join(timeout=2)
+        # Clean up previous processor for this stream
+        if stream_path in stream_processors:
+            stream_processors[stream_path].cleanup()
+        # Update configuration for this stream
+        config = {
+            'rtmp_url': rtmp_url,
+            'confidence': confidence,
+            'iou': iou,
+            'model': model,
+            'enable_tracking': True,
+            'show_depth': True,
+            'enable_bev': True,
+            'depth_model': 'midas',
+            'depth_size': 'small',
+            'device': 'auto',
+            'depth_range': [1.0, 50.0],
+            'smooth_depth': True
+        }
+        current_configs[stream_path] = config
+        # Start new detection thread for this stream
+        stop_detection_flags[stream_path] = False
+        processor = StreamProcessor()
+        stream_processors[stream_path] = processor
+        detection_threads[stream_path] = threading.Thread(
+            target=processor.run_detection,
+            args=(rtmp_url, config, stream_path)
+        )
+        detection_threads[stream_path].daemon = True
+        detection_threads[stream_path].start()
+        return jsonify({'message': f'Detection started for {stream_path}'})
+    except Exception as e:
+        return jsonify({'error': f'Failed to start detection: {str(e)}'}), 500
+
+@app.route('/api/stop_detection', methods=['POST'])
+def stop_detection_api():
+    """Stop detection for a specific stream."""
+    global stop_detection_flags, stream_processors, detection_threads
+    try:
+        data = request.get_json()
+        stream_path = data.get('stream_path')
+        if not stream_path:
+            return jsonify({'error': 'stream_path is required'}), 400
+        stop_detection_flags[stream_path] = True
+        if stream_path in detection_threads and detection_threads[stream_path].is_alive():
+            detection_threads[stream_path].join(timeout=2)
+        if stream_path in stream_processors:
+            stream_processors[stream_path].cleanup()
+        return jsonify({'message': f'Detection stopped for {stream_path}'})
+    except Exception as e:
+        return jsonify({'error': f'Failed to stop detection: {str(e)}'}), 500
+
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    """Get current detection status."""
+    global stream_processors
+    
+    return jsonify({
+        'is_running': [processor.is_running for processor in stream_processors.values()],
+        'detection_available': DETECTION_AVAILABLE
+    })
+
+@app.route('/api/available_streams', methods=['GET'])
+def available_streams():
+    """Fetch available RTMP streams from the simulator."""
+    try:
+        resp = requests.get('http://simulator.safenavsystem.com/stream_params', timeout=5)
+        resp.raise_for_status()
+        streams = resp.json()
+        return jsonify({'streams': streams})
+    except Exception as e:
+        return jsonify({'error': f'Failed to fetch streams: {str(e)}'}), 500
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection."""
+    print('Client connected')
+    emit('status', {'message': 'Connected to detection server'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection."""
+    print('Client disconnected')
+
+if __name__ == '__main__':
+    # Create templates directory if it doesn't exist
+    templates_dir = Path(__file__).parent / 'templates'
+    templates_dir.mkdir(exist_ok=True)
+    
+    print("Starting Object Detection Dashboard...")
+    print(f"Detection modules available: {DETECTION_AVAILABLE}")
+    print("Open your browser and go to: http://localhost:7070")
+    
+    # Use debug=False for production/Docker environment
+    socketio.run(app, host='0.0.0.0', port=7070, debug=False, allow_unsafe_werkzeug=True) 

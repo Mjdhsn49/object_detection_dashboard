@@ -1,0 +1,22 @@
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+scipy>=1.10.0
+tqdm>=4.65.0
+matplotlib>=3.7.0
+pyyaml>=6.0.0
+requests>=2.31.0
+ultralytics>=8.0.0  # For YOLOv8
+timm>=0.9.0  # For model backbones
+einops>=0.6.0
+filterpy>=1.4.5  # For Kalman filtering in tracking
+lap>=0.4.0  # For Hungarian algorithm in tracking
+scikit-image>=0.20.0
+transformers>=4.20.0  # For MiDaS depth estimation
+# Optional - for development
+pytest>=7.0.0
+black>=22.0.0
+isort>=5.10.0
+# MiDaS models are downloaded automatically by torch.hub 

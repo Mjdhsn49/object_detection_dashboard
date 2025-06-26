@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  object-detection-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple
+    container_name: object-detection-dashboard-dev
+    ports:
+      - "7070:7070"
+    environment:
+      - PYTHONPATH=/app
+      - KMP_DUPLICATE_LIB_OK=TRUE
+      - FLASK_ENV=development
+    volumes:
+      # Mount source code for development
+      - .:/app
+      # Mount models directory
+      - ./data:/app/data
+      - ./yolov8n.pt:/app/yolov8n.pt
+      # Mount output directory
+      - ./output:/app/output
+    restart: unless-stopped
+    command: python web_dashboard.py
+    networks:
+      - detection-network
+
+networks:
+  detection-network:
+    driver: bridge
+
+volumes:
+  output:
+    driver: local 

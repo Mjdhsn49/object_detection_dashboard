@@ -1,0 +1,7 @@
+path: H:\yolo_model\infrared
+train: H:\yolo_model\infrared\train\images
+val: H:\yolo_model\infrared\valid\images
+test: H:\yolo_model\infrared\test\images
+
+nc: 6  # number of classes
+names: ['0', '1', '2', '3', '4', '5']  # class names
