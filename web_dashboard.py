@@ -56,23 +56,28 @@ class StreamProcessor:
         self.is_running = False
         
     def initialize_models(self, config):
-        """Initialize detection models."""
+        """Initialize detection models with GPU optimization."""
         if not DETECTION_AVAILABLE:
             return False
         try:
             self.config = config
-            device = config.get('device', 'cpu')
+            device = config.get('device', 'auto')
             if device == 'auto':
                 if torch.cuda.is_available():
                     device = 'cuda'
-                    print("CUDA is available! Using GPU for all models.")
+                    print("🚀 CUDA is available! Using GPU for all models.")
                     print(f"GPU: {torch.cuda.get_device_name(0)}")
+                    # Optimize CUDA settings for maximum performance
                     torch.backends.cudnn.benchmark = True
                     torch.backends.cudnn.deterministic = False
+                    torch.backends.cudnn.enabled = True
+                    # Set memory fraction for better performance
+                    torch.cuda.empty_cache()
                 else:
                     device = 'cpu'
-                    print("CUDA is not available. Using CPU for all models.")
+                    print("⚠️ CUDA is not available. Using CPU for all models.")
             print(f"Initializing models on device: {device}")
+            
             # Only allow three local models (relative paths for Docker)
             allowed_models = [
                 'data/other_models/default_model/yolov8n.pt',
@@ -83,6 +88,7 @@ class StreamProcessor:
             if model_path not in allowed_models:
                 print(f"Model {model_path} not allowed. Using default model.")
                 model_path = allowed_models[0]
+            
             try:
                 self.detector = ObjectDetector(
                     model_size=model_path,
@@ -319,7 +325,7 @@ class StreamProcessor:
         return frame
     
     def run_detection(self, rtmp_url, config, stop_flag_key):
-        """Main detection loop."""
+        """Main detection loop with GPU optimization."""
         global stop_detection_flags
         
         try:
@@ -339,36 +345,44 @@ class StreamProcessor:
             frame_count = 0
             start_time = time.time()
             
+            # Optimize frame processing for higher FPS
+            frame_skip = 0  # Process every frame for maximum quality
+            max_fps = 30   # Target FPS
+            
             while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
                 ret, frame = self.cap.read()
                 if not ret:
                     print("Failed to read frame from stream")
-                    time.sleep(0.1)
+                    time.sleep(0.01)  # Reduced sleep for faster recovery
+                    continue
+                
+                # Frame skipping for performance (optional)
+                frame_count += 1
+                if frame_skip > 0 and frame_count % (frame_skip + 1) != 0:
                     continue
                 
                 # Process frame
                 processed_frame = self.process_frame(frame)
                 
-                # Calculate FPS
-                frame_count += 1
-                if frame_count % 30 == 0:
+                # Calculate FPS more frequently for better feedback
+                if frame_count % 15 == 0:  # Update FPS every 15 frames
                     elapsed_time = time.time() - start_time
                     fps = frame_count / elapsed_time
                     socketio.emit('fps_update', {'fps': f'{fps:.1f}', 'stream_path': stop_flag_key})
                 
-                # Encode frame for web display
+                # Encode frame for web display with optimization
                 try:
-                    # Resize frame for web display
+                    # Resize frame for web display (optimized size)
                     height, width = processed_frame.shape[:2]
-                    max_width = 800
+                    max_width = 640  # Reduced for better performance
                     if width > max_width:
                         scale = max_width / width
                         new_width = int(width * scale)
                         new_height = int(height * scale)
                         processed_frame = cv2.resize(processed_frame, (new_width, new_height))
                     
-                    # Encode to JPEG
-                    _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    # Encode to JPEG with optimized quality
+                    _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     frame_data = base64.b64encode(buffer).decode('utf-8')
                     
                     # Send frame to web client with stream_path
@@ -377,8 +391,13 @@ class StreamProcessor:
                 except Exception as e:
                     print(f"Error encoding frame: {e}")
                 
-                # Small delay to control frame rate
-                time.sleep(0.033)  # ~30 FPS
+                # Adaptive frame rate control
+                target_frame_time = 1.0 / max_fps
+                elapsed = time.time() - start_time
+                frame_time = elapsed / frame_count if frame_count > 0 else 0
+                
+                if frame_time < target_frame_time:
+                    time.sleep(target_frame_time - frame_time)
                 
         except Exception as e:
             print(f"Error in detection loop: {e}")
@@ -487,6 +506,33 @@ def available_streams():
         return jsonify({'streams': streams})
     except Exception as e:
         return jsonify({'error': f'Failed to fetch streams: {str(e)}'}), 500
+
+@app.route('/api/gpu_status', methods=['GET'])
+def get_gpu_status():
+    """Get GPU availability and status."""
+    try:
+        gpu_available = torch.cuda.is_available()
+        gpu_info = {}
+        
+        if gpu_available:
+            gpu_info = {
+                'gpu_available': True,
+                'gpu_count': torch.cuda.device_count(),
+                'gpu_name': torch.cuda.get_device_name(0),
+                'gpu_memory': f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB"
+            }
+        else:
+            gpu_info = {
+                'gpu_available': False,
+                'message': 'CUDA not available, using CPU'
+            }
+        
+        return jsonify(gpu_info)
+    except Exception as e:
+        return jsonify({
+            'gpu_available': False,
+            'error': str(e)
+        }), 500
 
 @socketio.on('connect')
 def handle_connect():

@@ -1,86 +1,160 @@
 #!/usr/bin/env python3
 """
-Startup script for the Object Detection Web Dashboard
+Startup script for Object Detection Dashboard with GPU optimization.
 """
 
+import os
 import sys
 import subprocess
 import importlib.util
 from pathlib import Path
 
-def check_package(package_name):
-    """Check if a package is installed."""
-    spec = importlib.util.find_spec(package_name)
-    return spec is not None
-
-def install_package(package_name):
-    """Install a package using pip."""
-    try:
-        print(f"📦 Installing {package_name}...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name], 
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"✅ {package_name} installed successfully")
-        return True
-    except subprocess.CalledProcessError:
-        print(f"❌ Failed to install {package_name}")
-        return False
-
-def main():
-    print("🚀 Object Detection Web Dashboard")
-    print("=" * 50)
-    
-    # Check if we're in the right directory
-    if not Path("web_dashboard.py").exists():
-        print("❌ Error: web_dashboard.py not found!")
-        print("Please run this script from the project root directory.")
-        return
-    
-    # Required packages for web dashboard
+def check_dependencies():
+    """Check if all required dependencies are installed."""
     required_packages = [
-        "flask",
-        "flask_socketio", 
-        "opencv-python",
-        "numpy"
+        'torch',
+        'torchvision', 
+        'opencv-python',
+        'numpy',
+        'Flask',
+        'Flask-SocketIO',
+        'ultralytics',
+        'transformers',
+        'Pillow',
+        'scipy',
+        'filterpy'
     ]
     
-    print("📦 Checking and installing dependencies...")
-    
     missing_packages = []
+    
     for package in required_packages:
-        if check_package(package):
-            print(f"✅ {package} (already installed)")
-        else:
+        try:
+            importlib.import_module(package.replace('-', '_'))
+            print(f"✅ {package}")
+        except ImportError:
             missing_packages.append(package)
+            print(f"❌ {package} - MISSING")
     
     if missing_packages:
-        print(f"\n📥 Installing missing packages: {', '.join(missing_packages)}")
-        for package in missing_packages:
-            if not install_package(package):
-                print(f"❌ Cannot start dashboard without {package}")
-                return
+        print(f"\n❌ Missing packages: {', '.join(missing_packages)}")
+        print("Please install missing packages:")
+        print(f"pip install {' '.join(missing_packages)}")
+        return False
     
-    # Check detection modules
-    print("\n🔍 Checking detection modules...")
+    return True
+
+def check_gpu():
+    """Check GPU availability and CUDA support."""
     try:
-        from src.models import ObjectDetector, DepthEstimator
-        print("✅ Detection modules available")
-    except ImportError as e:
-        print(f"⚠️  Warning: Detection modules not available: {e}")
-        print("The dashboard will run but detection features may not work.")
+        import torch
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            
+            print(f"🚀 GPU Available: {gpu_name}")
+            print(f"   - Count: {gpu_count}")
+            print(f"   - Memory: {gpu_memory:.1f} GB")
+            print(f"   - CUDA Version: {torch.version.cuda}")
+            return True
+        else:
+            print("⚠️  No GPU/CUDA available - will use CPU")
+            return False
+    except Exception as e:
+        print(f"⚠️  Error checking GPU: {e}")
+        return False
+
+def check_models():
+    """Check if model files exist."""
+    model_paths = [
+        'data/other_models/default_model/yolov8n.pt',
+        'data/other_models/cross_model/weights/best.pt',
+        'data/other_models/Infrared/weights/best.onnx'
+    ]
     
-    print("\n🌐 Starting web dashboard...")
-    print("The dashboard will be available at: http://localhost:7070")
-    print("Press Ctrl+C to stop the server")
+    missing_models = []
+    
+    for model_path in model_paths:
+        if Path(model_path).exists():
+            print(f"✅ {model_path}")
+        else:
+            missing_models.append(model_path)
+            print(f"❌ {model_path} - MISSING")
+    
+    if missing_models:
+        print(f"\n⚠️  Missing model files: {len(missing_models)}")
+        print("Some models may not be available for selection")
+    
+    return len(missing_models) == 0
+
+def optimize_system():
+    """Apply system optimizations for better performance."""
+    print("\n🔧 Applying system optimizations...")
+    
+    # Set environment variables for better performance
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+    os.environ['OMP_NUM_THREADS'] = '4'  # Limit OpenMP threads
+    
+    # Try to set CUDA optimizations
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
+            torch.backends.cudnn.enabled = True
+            print("✅ CUDA optimizations applied")
+    except:
+        pass
+    
+    print("✅ System optimizations applied")
+
+def main():
+    """Main startup function."""
+    print("🚀 Object Detection Dashboard - GPU Optimized")
+    print("=" * 50)
+    
+    # Check dependencies
+    print("\n📦 Checking dependencies...")
+    if not check_dependencies():
+        print("\n❌ Please install missing dependencies before starting.")
+        sys.exit(1)
+    
+    # Check GPU
+    print("\n🖥️  Checking GPU availability...")
+    gpu_available = check_gpu()
+    
+    # Check models
+    print("\n🤖 Checking model files...")
+    check_models()
+    
+    # Apply optimizations
+    optimize_system()
+    
+    # Start the dashboard
+    print("\n🌐 Starting Object Detection Dashboard...")
+    print("   - URL: http://localhost:7070")
+    print("   - GPU Mode: " + ("Enabled" if gpu_available else "Disabled"))
+    print("   - Press Ctrl+C to stop")
     print("=" * 50)
     
     try:
         # Import and run the dashboard
         from web_dashboard import app, socketio
-        socketio.run(app, host='0.0.0.0', port=7070, debug=False)
+        
+        # Run with optimized settings
+        socketio.run(
+            app, 
+            host='0.0.0.0', 
+            port=7070, 
+            debug=False, 
+            allow_unsafe_werkzeug=True,
+            use_reloader=False  # Disable reloader for better performance
+        )
     except KeyboardInterrupt:
-        print("\n👋 Dashboard stopped by user")
+        print("\n\n👋 Dashboard stopped by user")
     except Exception as e:
         print(f"\n❌ Error starting dashboard: {e}")
+        sys.exit(1)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main() 

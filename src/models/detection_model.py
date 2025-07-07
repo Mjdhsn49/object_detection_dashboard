@@ -1,5 +1,5 @@
 """
-Object detection model using YOLOv8.
+Object detection model using YOLOv8 with GPU optimization.
 """
 
 import torch
@@ -10,7 +10,7 @@ from ultralytics import YOLO
 
 class ObjectDetector:
     def __init__(self, model_size="nano", conf_thres=0.25, iou_thres=0.45, classes=None, device=None):
-        """Initialize YOLO model."""
+        """Initialize YOLO model with GPU optimization."""
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.classes = classes
@@ -19,11 +19,17 @@ class ObjectDetector:
         if device is None:
             if torch.cuda.is_available():
                 self.device = 'cuda'
-                print("CUDA is available! Using GPU.")
+                print("🚀 CUDA is available! Using GPU for object detection.")
                 print(f"GPU: {torch.cuda.get_device_name(0)}")
+                # Optimize CUDA settings for maximum performance
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cudnn.deterministic = False
+                torch.backends.cudnn.enabled = True
+                # Clear GPU cache
+                torch.cuda.empty_cache()
             else:
                 self.device = 'cpu'
-                print("CUDA is not available. Using CPU.")
+                print("⚠️ CUDA is not available. Using CPU for object detection.")
         else:
             self.device = device
         
@@ -59,17 +65,29 @@ class ObjectDetector:
             self.model = YOLO(model_path)
             self.model.to(self.device)
             
-            # Warm up the model habe three models 
-            print("Warming up model...")
-            dummy_input = torch.zeros((1, 3, 640, 640)).to(self.device)
-            for _ in range(2):  # Run twice for warm-up
-                if self.device == 'cuda':
-                    torch.cuda.synchronize()
-                _ = self.model(dummy_input)
-                if self.device == 'cuda':
-                    torch.cuda.synchronize()
+            # Optimize model for inference
+            if self.device == 'cuda':
+                self.model.fuse()  # Fuse layers for faster inference
+                # Set model to evaluation mode
+                self.model.eval()
+                # Enable mixed precision for faster inference
+                with torch.cuda.amp.autocast():
+                    # Warm up the model with dummy input
+                    print("🔥 Warming up model with GPU optimization...")
+                    dummy_input = torch.zeros((1, 3, 640, 640), device=self.device)
+                    for _ in range(3):  # Run multiple times for better warm-up
+                        with torch.no_grad():
+                            _ = self.model(dummy_input)
+                        torch.cuda.synchronize()
+            else:
+                # CPU warm-up
+                print("🔥 Warming up model...")
+                dummy_input = torch.zeros((1, 3, 640, 640))
+                for _ in range(2):
+                    with torch.no_grad():
+                        _ = self.model(dummy_input)
             
-            print(f"Model loaded successfully on {self.device}")
+            print(f"✅ Model loaded successfully on {self.device}")
             
         except Exception as e:
             print(f"Error loading model on {self.device}: {e}")
@@ -79,30 +97,54 @@ class ObjectDetector:
             self.model.to('cpu')
     
     def detect(self, frame, track=False):
-        """Detect objects in frame."""
+        """Detect objects in frame with GPU optimization."""
         try:
             # Ensure frame is on the correct device
             if isinstance(frame, torch.Tensor):
                 frame = frame.to(self.device)
             
-            # Run inference
-            if track:
-                results = self.model.track(
-                    source=frame,
-                    conf=self.conf_thres,
-                    iou=self.iou_thres,
-                    persist=True,
-                    verbose=False,
-                    device=self.device
-                )
+            # Run inference with optimization
+            if self.device == 'cuda':
+                with torch.cuda.amp.autocast():  # Use mixed precision
+                    with torch.no_grad():  # Disable gradient computation
+                        if track:
+                            results = self.model.track(
+                                source=frame,
+                                conf=self.conf_thres,
+                                iou=self.iou_thres,
+                                persist=True,
+                                verbose=False,
+                                device=self.device
+                            )
+                        else:
+                            results = self.model.predict(
+                                source=frame,
+                                conf=self.conf_thres,
+                                iou=self.iou_thres,
+                                verbose=False,
+                                device=self.device
+                            )
+                        # Synchronize GPU
+                        torch.cuda.synchronize()
             else:
-                results = self.model.predict(
-                    source=frame,
-                    conf=self.conf_thres,
-                    iou=self.iou_thres,
-                    verbose=False,
-                    device=self.device
-                )
+                with torch.no_grad():
+                    if track:
+                        results = self.model.track(
+                            source=frame,
+                            conf=self.conf_thres,
+                            iou=self.iou_thres,
+                            persist=True,
+                            verbose=False,
+                            device=self.device
+                        )
+                    else:
+                        results = self.model.predict(
+                            source=frame,
+                            conf=self.conf_thres,
+                            iou=self.iou_thres,
+                            verbose=False,
+                            device=self.device
+                        )
             
             if results is None or len(results) == 0:
                 return frame, []

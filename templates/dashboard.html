@@ -68,7 +68,7 @@
             min-height: 0;
         }
         .control-panel {
-            min-width: 260px;
+            min-width: 280px;
             max-width: 320px;
             background: #fff;
             border-right: 1px solid #e3e8ee;
@@ -76,37 +76,110 @@
             box-shadow: 2px 0 8px rgba(44,62,80,0.03);
             display: flex;
             flex-direction: column;
-            gap: 18px;
+            gap: 20px;
         }
         .control-panel h2 {
             color: #2c3e50;
             font-size: 1.3em;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
+            text-align: center;
         }
-        .alerts {
-            margin-bottom: 10px;
+        .global-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
         }
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 12px;
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .control-group label {
+            font-size: 0.95em;
+            color: #34495e;
             font-weight: 600;
+        }
+        .control-group select,
+        .control-group input[type="range"],
+        .control-group input[type="text"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+        .control-group input[type="range"] {
+            padding: 0;
+            border: none;
+        }
+        .control-group input[type="text"] {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .value-display {
+            font-size: 0.85em;
+            color: #667eea;
+            font-weight: 600;
+            text-align: center;
+        }
+        .btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
             font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 2px 8px rgba(44,62,80,0.1);
+            margin: 5px 0;
         }
-        .alert-success {
-            background: #eafaf1;
-            color: #1e824c;
-            border: 1px solid #b7eacb;
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #4e8cff 100%);
+            color: #fff;
         }
-        .alert-error {
-            background: #fbeaea;
-            color: #c0392b;
-            border: 1px solid #f5c6cb;
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #4e8cff 0%, #667eea 100%);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+            transform: translateY(-1px);
         }
-        .alert-info {
-            background: #eaf3fb;
-            color: #2980b9;
-            border: 1px solid #bee5eb;
+        .btn-danger {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            color: #fff;
+        }
+        .btn-danger:hover {
+            background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);
+            box-shadow: 0 4px 12px rgba(231, 76, 60, 0.2);
+            transform: translateY(-1px);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            box-shadow: none;
+            transform: none;
+        }
+        .system-info {
+            background: #f8fafc;
+            border: 1px solid #e3e8ee;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        .system-info h3 {
+            color: #2c3e50;
+            font-size: 1.1em;
+            margin: 0 0 10px 0;
+        }
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            font-size: 0.9em;
+        }
+        .info-label {
+            color: #666;
+        }
+        .info-value {
+            color: #2c3e50;
+            font-weight: 600;
         }
         .video-grid-area {
             flex: 1 1 0;
@@ -116,15 +189,15 @@
         }
         .video-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-            gap: 32px;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 24px;
             width: 100%;
         }
         .video-card {
             background: #fff;
-            border-radius: 16px;
-            box-shadow: 0 4px 24px rgba(44,62,80,0.10), 0 1.5px 4px rgba(44,62,80,0.08);
-            padding: 0 0 18px 0;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(44,62,80,0.08);
+            padding: 0 0 15px 0;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -132,90 +205,57 @@
             min-width: 0;
         }
         .video-card:hover {
-            box-shadow: 0 8px 32px rgba(44,62,80,0.18), 0 2px 8px rgba(44,62,80,0.12);
+            box-shadow: 0 6px 28px rgba(44,62,80,0.12);
         }
         .video-title {
             color: #2c3e50;
             font-weight: 700;
-            font-size: 1.15em;
-            margin: 18px 0 2px 0;
+            font-size: 1.1em;
+            margin: 15px 0 5px 0;
             letter-spacing: 0.5px;
             text-align: center;
         }
         .video-meta {
             color: #888;
-            font-size: 0.97em;
-            margin-bottom: 6px;
+            font-size: 0.9em;
+            margin-bottom: 8px;
             text-align: center;
         }
         .video-stream {
-            width: 420px;
-            height: 315px;
+            width: 100%;
+            max-width: 400px;
+            height: 300px;
             background: #111;
-            border-radius: 10px;
-            margin-bottom: 12px;
-            box-shadow: 0 2px 8px rgba(44,62,80,0.10);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 8px rgba(44,62,80,0.1);
             object-fit: contain;
         }
-        .controls {
-            width: 95%;
+        .video-stats {
             display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
+            justify-content: center;
             align-items: center;
-            justify-content: space-between;
-            margin-bottom: 4px;
-            margin-top: 6px;
-        }
-        .controls label {
-            font-size: 0.97em;
-            color: #34495e;
-            font-weight: 500;
-        }
-        .controls select,
-        .controls input[type="range"] {
-            margin-left: 6px;
-        }
-        .fps {
-            font-size: 1em;
+            gap: 15px;
+            font-size: 0.9em;
             color: #667eea;
             font-weight: 600;
-            margin-left: 8px;
         }
-        .btn {
-            padding: 8px 18px;
-            border: none;
-            border-radius: 7px;
-            font-size: 1em;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s, box-shadow 0.2s;
-            box-shadow: 0 1px 2px rgba(44,62,80,0.07);
+        .fps {
+            color: #27ae60;
         }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #4e8cff 100%);
-            color: #fff;
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #e74c3c;
+            display: inline-block;
+            margin-right: 5px;
         }
-        .btn-primary:hover {
-            background: linear-gradient(135deg, #4e8cff 0%, #667eea 100%);
-            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.13);
-        }
-        .btn-danger {
-            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
-            color: #fff;
-        }
-        .btn-danger:hover {
-            background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%);
-            box-shadow: 0 2px 8px rgba(231, 76, 60, 0.13);
-        }
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            box-shadow: none;
+        .status-indicator.active {
+            background: #27ae60;
         }
         @media (max-width: 1200px) {
             .video-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-            .video-stream { width: 98vw; max-width: 98vw; }
         }
         @media (max-width: 900px) {
             .main-content { flex-direction: column; }
@@ -269,7 +309,7 @@
 <body>
     <div class="dashboard-header">
         <h1>Object Detection Dashboard</h1>
-        <p>Object detection and depth estimation on multiple RTMP streams</p>
+        <p>Multi-stream object detection and depth estimation</p>
     </div>
     <div class="status-bar">
         <span class="status-dot" id="status-dot"></span>
@@ -277,27 +317,78 @@
     </div>
     <div class="toast-container" id="toast-container"></div>
     <div class="main-content">
-        <div class="video-grid-area" style="width:100%;">
+        <div class="control-panel">
+            <h2>Global Controls</h2>
+            <div class="global-controls">
+                <div class="control-group">
+                    <label>Base URL:</label>
+                    <input type="text" id="base-url" value="rtmp://simulator.safenavsystem.com" placeholder="Enter RTMP base URL">
+                </div>
+                <div class="control-group">
+                    <label>Model:</label>
+                    <select id="global-model">
+                        <option value="data/other_models/default_model/yolov8n.pt">YOLOv8n (Default)</option>
+                        <option value="data/other_models/cross_model/weights/best.pt">Cross Model (best.pt)</option>
+                        <option value="data/other_models/Infrared/weights/best.onnx">Infrared Model (best.onnx)</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Confidence: <span id="global-conf-value">0.25</span></label>
+                    <input type="range" id="global-confidence" min="0.1" max="1.0" step="0.05" value="0.25">
+                </div>
+                <div class="control-group">
+                    <label>IoU: <span id="global-iou-value">0.45</span></label>
+                    <input type="range" id="global-iou" min="0.1" max="1.0" step="0.05" value="0.45">
+                </div>
+                <button class="btn btn-primary" id="start-all-btn">🚀 Start All Streams</button>
+                <button class="btn btn-danger" id="stop-all-btn" disabled>⏹️ Stop All Streams</button>
+            </div>
+            <div class="system-info">
+                <h3>System Status</h3>
+                <div class="info-item">
+                    <span class="info-label">Active Streams:</span>
+                    <span class="info-value" id="active-streams">0</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Total FPS:</span>
+                    <span class="info-value" id="total-fps">0</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">GPU Status:</span>
+                    <span class="info-value" id="gpu-status">Checking...</span>
+                </div>
+            </div>
+        </div>
+        <div class="video-grid-area">
             <div id="stream-list-loading">Loading available streams...</div>
             <div class="video-grid" id="multi-video-container"></div>
         </div>
     </div>
     <div class="dashboard-footer">
-        YOLO Marine Object Detection Dashboard
+        YOLO Object Detection Dashboard - GPU Optimized
     </div>
 
     <script>
         // Initialize Socket.IO
         const socket = io();
         const toastContainer = document.getElementById('toast-container');
-        const streamListDiv = document.getElementById('stream-list');
         const streamListLoading = document.getElementById('stream-list-loading');
         const multiVideoContainer = document.getElementById('multi-video-container');
         const statusDot = document.getElementById('status-dot');
         const statusText = document.getElementById('status-text');
+        const startAllBtn = document.getElementById('start-all-btn');
+        const stopAllBtn = document.getElementById('stop-all-btn');
+        const activeStreamsEl = document.getElementById('active-streams');
+        const totalFpsEl = document.getElementById('total-fps');
+        const gpuStatusEl = document.getElementById('gpu-status');
 
         // Store state for each stream
         const streamState = {};
+        let globalConfig = {
+            model: 'data/other_models/default_model/yolov8n.pt',
+            confidence: 0.25,
+            iou: 0.45
+        };
 
         // Show alert function
         function showAlert(message, type = 'info') {
@@ -312,45 +403,159 @@
             }, 4000);
         }
 
+        // Update global controls
+        document.getElementById('base-url').addEventListener('input', function() {
+            updateStreamUrls();
+        });
+
+        document.getElementById('global-model').addEventListener('change', function() {
+            globalConfig.model = this.value;
+        });
+
+        document.getElementById('global-confidence').addEventListener('input', function() {
+            globalConfig.confidence = parseFloat(this.value);
+            document.getElementById('global-conf-value').textContent = this.value;
+        });
+
+        document.getElementById('global-iou').addEventListener('input', function() {
+            globalConfig.iou = parseFloat(this.value);
+            document.getElementById('global-iou-value').textContent = this.value;
+        });
+
+        // Update stream URLs when base URL changes
+        function updateStreamUrls() {
+            const baseUrl = document.getElementById('base-url').value.trim();
+            if (!baseUrl) return;
+            
+            Object.values(streamState).forEach(stream => {
+                const rtmpUrl = baseUrl + stream.stream_path;
+                stream.rtmp_url = rtmpUrl;
+                
+                // Update the display if the meta element exists
+                const metaElement = stream.videoEl.parentElement.querySelector('.video-meta:last-child');
+                if (metaElement) {
+                    metaElement.innerHTML = `RTMP: <span style="font-size:0.93em;">${rtmpUrl}</span>`;
+                }
+            });
+        }
+
+        // Start all streams
+        startAllBtn.addEventListener('click', async function() {
+            startAllBtn.disabled = true;
+            stopAllBtn.disabled = false;
+            showAlert('Starting all streams...', 'info');
+            
+            const streams = Object.values(streamState);
+            let startedCount = 0;
+            
+            for (const stream of streams) {
+                try {
+                    const config = {
+                        rtmp_url: stream.rtmp_url,
+                        stream_path: stream.stream_path,
+                        model: globalConfig.model,
+                        confidence: globalConfig.confidence,
+                        iou: globalConfig.iou
+                    };
+                    
+                    const response = await fetch('/api/start_detection', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(config)
+                    });
+                    
+                    if (response.ok) {
+                        startedCount++;
+                        stream.isActive = true;
+                        stream.statusIndicator.classList.add('active');
+                    }
+                } catch (error) {
+                    console.error(`Failed to start stream ${stream.camera_id}:`, error);
+                }
+            }
+            
+            updateSystemStatus();
+            showAlert(`Started ${startedCount} out of ${streams.length} streams`, 'success');
+        });
+
+        // Stop all streams
+        stopAllBtn.addEventListener('click', async function() {
+            stopAllBtn.disabled = true;
+            showAlert('Stopping all streams...', 'info');
+            
+            const streams = Object.values(streamState);
+            let stoppedCount = 0;
+            
+            for (const stream of streams) {
+                try {
+                    const response = await fetch('/api/stop_detection', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ stream_path: stream.stream_path })
+                    });
+                    
+                    if (response.ok) {
+                        stoppedCount++;
+                        stream.isActive = false;
+                        stream.statusIndicator.classList.remove('active');
+                        stream.videoEl.src = '';
+                        stream.fpsEl.textContent = '--';
+                    }
+                } catch (error) {
+                    console.error(`Failed to stop stream ${stream.camera_id}:`, error);
+                }
+            }
+            
+            startAllBtn.disabled = false;
+            updateSystemStatus();
+            showAlert(`Stopped ${stoppedCount} streams`, 'info');
+        });
+
+        // Update system status
+        function updateSystemStatus() {
+            const activeCount = Object.values(streamState).filter(s => s.isActive).length;
+            activeStreamsEl.textContent = activeCount;
+            
+            const totalFps = Object.values(streamState)
+                .filter(s => s.isActive && s.currentFps !== '--')
+                .reduce((sum, s) => sum + parseFloat(s.currentFps || 0), 0);
+            totalFpsEl.textContent = totalFps.toFixed(1);
+        }
+
         // Fetch available streams and build UI
         async function loadStreams() {
             try {
                 const resp = await fetch('/api/available_streams');
                 const data = await resp.json();
                 streamListLoading.style.display = 'none';
+                
                 if (!data.streams || !Array.isArray(data.streams) || data.streams.length === 0) {
                     showAlert('No streams found', 'error');
                     return;
                 }
+                
                 multiVideoContainer.innerHTML = '';
                 data.streams.forEach((stream, idx) => {
                     const stream_path = stream.stream_path;
                     const camera_id = stream.camera_id;
-                    const rtmp_url = `rtmp://simulator.safenavsystem.com${stream_path}`;
+                    const baseUrl = document.getElementById('base-url').value.trim() || 'rtmp://simulator.safenavsystem.com';
+                    const rtmp_url = baseUrl + stream_path;
+                    
                     // Video card
                     const videoCard = document.createElement('div');
                     videoCard.className = 'video-card';
                     videoCard.innerHTML = `
                         <div class="video-title">${camera_id}</div>
-                        <div class="video-meta">Path: <span>${stream_path}</span></div>
+                        <div class="video-meta">Path: ${stream_path}</div>
                         <div class="video-meta">RTMP: <span style="font-size:0.93em;">${rtmp_url}</span></div>
                         <img id="video-stream-${idx}" class="video-stream" src="" alt="${camera_id}">
-                        <div class="controls">
-                            <label>Model:
-                                <select id="model-${idx}">
-                                    <option value="data/other_models/default_model/yolov8n.pt">YOLOv8n (Default)</option>
-                                    <option value="data/other_models/cross_model/weights/best.pt">Cross Model (best.pt)</option>
-                                    <option value="data/other_models/Infrared/weights/best.onnx">Infrared Model (best.onnx)</option>
-                                </select>
-                            </label>
-                            <label>Confidence: <input type="range" id="confidence-${idx}" min="0.1" max="1.0" step="0.05" value="0.25"> <span id="conf-value-${idx}">0.25</span></label>
-                            <label>IoU: <input type="range" id="iou-${idx}" min="0.1" max="1.0" step="0.05" value="0.45"> <span id="iou-value-${idx}">0.45</span></label>
-                            <button class="btn btn-primary" id="start-btn-${idx}">▶️ Start Detection</button>
-                            <button class="btn btn-danger" id="stop-btn-${idx}" disabled>⏹️ Stop Detection</button>
-                            <span class="fps">FPS: <span id="fps-${idx}">--</span></span>
+                        <div class="video-stats">
+                            <span class="status-indicator" id="status-${idx}"></span>
+                            <span>FPS: <span id="fps-${idx}">--</span></span>
                         </div>
                     `;
                     multiVideoContainer.appendChild(videoCard);
+                    
                     // State
                     streamState[stream_path] = {
                         idx,
@@ -359,79 +564,14 @@
                         stream_path,
                         videoEl: document.getElementById(`video-stream-${idx}`),
                         fpsEl: document.getElementById(`fps-${idx}`),
-                        startBtn: document.getElementById(`start-btn-${idx}`),
-                        stopBtn: document.getElementById(`stop-btn-${idx}`),
-                        confSlider: document.getElementById(`confidence-${idx}`),
-                        confValue: document.getElementById(`conf-value-${idx}`),
-                        iouSlider: document.getElementById(`iou-${idx}`),
-                        iouValue: document.getElementById(`iou-value-${idx}`),
-                        modelSelect: document.getElementById(`model-${idx}`)
+                        statusIndicator: document.getElementById(`status-${idx}`),
+                        isActive: false,
+                        currentFps: '--'
                     };
-                    // Update range values
-                    streamState[stream_path].confSlider.addEventListener('input', function() {
-                        streamState[stream_path].confValue.textContent = this.value;
-                    });
-                    streamState[stream_path].iouSlider.addEventListener('input', function() {
-                        streamState[stream_path].iouValue.textContent = this.value;
-                    });
-                    // Start detection
-                    streamState[stream_path].startBtn.addEventListener('click', async function() {
-                        const config = {
-                            rtmp_url: rtmp_url,
-                            stream_path: stream_path,
-                            model: streamState[stream_path].modelSelect.value,
-                            confidence: parseFloat(streamState[stream_path].confSlider.value),
-                            iou: parseFloat(streamState[stream_path].iouSlider.value)
-                        };
-                        streamState[stream_path].startBtn.disabled = true;
-                        streamState[stream_path].stopBtn.disabled = false;
-                        showAlert(`Starting detection for ${camera_id}`, 'info');
-                        try {
-                            const response = await fetch('/api/start_detection', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(config)
-                            });
-                            const result = await response.json();
-                            if (response.ok) {
-                                showAlert(result.message, 'success');
-                            } else {
-                                showAlert(`Error: ${result.error}`, 'error');
-                                streamState[stream_path].startBtn.disabled = false;
-                                streamState[stream_path].stopBtn.disabled = true;
-                            }
-                        } catch (error) {
-                            showAlert(`Network error: ${error.message}`, 'error');
-                            streamState[stream_path].startBtn.disabled = false;
-                            streamState[stream_path].stopBtn.disabled = true;
-                        }
-                    });
-                    // Stop detection
-                    streamState[stream_path].stopBtn.addEventListener('click', async function() {
-                        streamState[stream_path].stopBtn.disabled = true;
-                        showAlert(`Stopping detection for ${camera_id}`, 'info');
-                        try {
-                            const response = await fetch('/api/stop_detection', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ stream_path })
-                            });
-                            const result = await response.json();
-                            if (response.ok) {
-                                showAlert(result.message, 'info');
-                                streamState[stream_path].startBtn.disabled = false;
-                                // Clear the video image when stopped
-                                streamState[stream_path].videoEl.src = '';
-                            } else {
-                                showAlert(`Error: ${result.error}`, 'error');
-                                streamState[stream_path].stopBtn.disabled = false;
-                            }
-                        } catch (error) {
-                            showAlert(`Network error: ${error.message}`, 'error');
-                            streamState[stream_path].stopBtn.disabled = false;
-                        }
-                    });
                 });
+                
+                updateSystemStatus();
+                
             } catch (error) {
                 streamListLoading.style.display = 'none';
                 showAlert('Failed to load streams: ' + error.message, 'error');
@@ -444,30 +584,51 @@
             statusDot.classList.add('active');
             showAlert('Connected to detection server', 'success');
         });
+        
         socket.on('disconnect', function() {
             statusText.textContent = 'Disconnected';
             statusDot.classList.remove('active');
             showAlert('Disconnected from server', 'error');
         });
+        
         socket.on('status', function(data) {
             showAlert(data.message, 'info');
         });
+        
         socket.on('error', function(data) {
             showAlert(`Error: ${data.message}`, 'error');
         });
+        
         socket.on('frame', function(data) {
             if (data.stream_path && streamState[data.stream_path]) {
                 streamState[data.stream_path].videoEl.src = 'data:image/jpeg;base64,' + data.image;
             }
         });
+        
         socket.on('fps_update', function(data) {
             if (data.stream_path && streamState[data.stream_path]) {
                 streamState[data.stream_path].fpsEl.textContent = data.fps;
+                streamState[data.stream_path].currentFps = data.fps;
+                updateSystemStatus();
             }
         });
 
+        // Check GPU status
+        async function checkGPUStatus() {
+            try {
+                const response = await fetch('/api/gpu_status');
+                const data = await response.json();
+                gpuStatusEl.textContent = data.gpu_available ? 'Available' : 'Not Available';
+                gpuStatusEl.style.color = data.gpu_available ? '#27ae60' : '#e74c3c';
+            } catch (error) {
+                gpuStatusEl.textContent = 'Unknown';
+                gpuStatusEl.style.color = '#f39c12';
+            }
+        }
+
         // Load streams on page load
         loadStreams();
+        checkGPUStatus();
     </script>
 </body>
 </html> 

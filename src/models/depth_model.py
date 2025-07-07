@@ -1,5 +1,5 @@
 """
-Depth estimation model using either MiDaS or Depth Anything v2.
+Depth estimation model using either MiDaS or Depth Anything v2 with GPU optimization.
 """
 
 import os
@@ -12,7 +12,7 @@ from transformers import pipeline
 
 class DepthEstimator:
     def __init__(self, model_type="midas", model_size="small", device='cpu'):
-        """Initialize depth estimation model.
+        """Initialize depth estimation model with GPU optimization.
         
         Args:
             model_type (str): Either 'midas' or 'depthanything'
@@ -50,7 +50,7 @@ class DepthEstimator:
                 self._init_midas()
             
             self.initialized = True
-            print(f"Initialized {self.model_type} {self.model_size} model on {device}")
+            print(f"✅ Initialized {self.model_type} {self.model_size} model on {device}")
             
         except Exception as e:
             print(f"Error initializing depth model: {e}")
@@ -58,7 +58,7 @@ class DepthEstimator:
             self.initialized = False
     
     def _init_midas(self):
-        """Initialize MiDaS model."""
+        """Initialize MiDaS model with GPU optimization."""
         if self.model_size == "small":
             model_name = "MiDaS_small"
         elif self.model_size == "large":
@@ -68,10 +68,19 @@ class DepthEstimator:
             model_name = "MiDaS_small"
             self.model_size = "small"
         
-        # Initialize MiDaS
+        # Initialize MiDaS with GPU optimization
         self.model = torch.hub.load("intel-isl/MiDaS", model_name)
         self.model.to(self.device)
         self.model.eval()
+        
+        # Optimize for inference
+        if self.device == 'cuda':
+            # Enable CUDA optimizations
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
+            # Clear GPU cache
+            torch.cuda.empty_cache()
+            print("🚀 MiDaS model optimized for GPU inference")
         
         # Initialize transforms
         midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
@@ -81,7 +90,7 @@ class DepthEstimator:
             self.transform = midas_transforms.dpt_transform
     
     def _init_depth_anything(self):
-        """Initialize Depth Anything v2 model."""
+        """Initialize Depth Anything v2 model with GPU optimization."""
         # Map model size to model name
         model_map = {
             'small': 'depth-anything/Depth-Anything-V2-Small-hf',
@@ -91,37 +100,57 @@ class DepthEstimator:
         
         model_name = model_map.get(self.model_size.lower(), model_map['small'])
         
-        # Create pipeline
+        # Create pipeline with GPU optimization
         try:
             self.pipe = pipeline(task="depth-estimation", model=model_name, device=self.pipe_device)
-            print(f"Loaded Depth Anything v2 {self.model_size} model on {self.pipe_device}")
+            if self.device == 'cuda':
+                print(f"🚀 Loaded Depth Anything v2 {self.model_size} model on GPU")
+            else:
+                print(f"✅ Loaded Depth Anything v2 {self.model_size} model on {self.pipe_device}")
         except Exception as e:
             # Fallback to CPU if there are issues
             print(f"Error loading model on {self.pipe_device}: {e}")
             print("Falling back to CPU for depth estimation")
             self.pipe_device = 'cpu'
             self.pipe = pipeline(task="depth-estimation", model=model_name, device=self.pipe_device)
-            print(f"Loaded Depth Anything v2 {self.model_size} model on CPU (fallback)")
+            print(f"✅ Loaded Depth Anything v2 {self.model_size} model on CPU (fallback)")
     
     def estimate_depth(self, frame, depth_range=(1.0, 50.0), smooth=True):
-        """Estimate depth for the entire frame."""
+        """Estimate depth for the entire frame with GPU optimization and noise reduction."""
         if not self.initialized:
-            # Fallback to placeholder
+            # Fallback to placeholder with better structure
             height, width = frame.shape[:2]
-            return np.random.uniform(depth_range[0], depth_range[1], (height, width)).astype(np.float32)
+            # Create a more realistic depth map instead of random noise
+            y_coords, x_coords = np.mgrid[0:height, 0:width]
+            # Create depth gradient from top to bottom (closer objects at bottom)
+            depth_map = depth_range[0] + (depth_range[1] - depth_range[0]) * (y_coords / height)
+            return depth_map.astype(np.float32)
         
         try:
             if self.model_type == "midas":
-                # MiDaS processing
+                # MiDaS processing with GPU optimization
                 input_batch = self.transform(frame).to(self.device)
+                
                 with torch.no_grad():
-                    prediction = self.model(input_batch)
-                    prediction = torch.nn.functional.interpolate(
-                        prediction.unsqueeze(1),
-                        size=frame.shape[:2],
-                        mode="bicubic",
-                        align_corners=False,
-                    ).squeeze()
+                    if self.device == 'cuda':
+                        with torch.cuda.amp.autocast():  # Use mixed precision
+                            prediction = self.model(input_batch)
+                            prediction = torch.nn.functional.interpolate(
+                                prediction.unsqueeze(1),
+                                size=frame.shape[:2],
+                                mode="bicubic",
+                                align_corners=False,
+                            ).squeeze()
+                        torch.cuda.synchronize()  # Ensure GPU operations complete
+                    else:
+                        prediction = self.model(input_batch)
+                        prediction = torch.nn.functional.interpolate(
+                            prediction.unsqueeze(1),
+                            size=frame.shape[:2],
+                            mode="bicubic",
+                            align_corners=False,
+                        ).squeeze()
+                
                 depth_map = prediction.cpu().numpy()
             else:  # depth anything
                 # Convert BGR to RGB
@@ -159,101 +188,135 @@ class DepthEstimator:
                         # Re-raise the error if not MPS
                         raise
             
-            # Normalize depth map
-            depth_min = depth_map.min()
-            depth_max = depth_map.max()
+            # Improved depth map processing to reduce noise
+            # Normalize depth map properly
+            depth_min = np.percentile(depth_map, 5)  # Use 5th percentile to avoid outliers
+            depth_max = np.percentile(depth_map, 95)  # Use 95th percentile to avoid outliers
+            
             if depth_max > depth_min:
+                # Clip outliers and normalize
+                depth_map = np.clip(depth_map, depth_min, depth_max)
                 depth_map = (depth_map - depth_min) / (depth_max - depth_min)
+            else:
+                # Fallback normalization if percentiles are the same
+                depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min() + 1e-8)
             
             # Scale to specified depth range
             depth_range_size = depth_range[1] - depth_range[0]
             depth_map = depth_map * depth_range_size + depth_range[0]
             
+            # Apply multiple smoothing techniques to reduce noise
             if smooth:
-                # Apply bilateral filter to smooth depth while preserving edges
-                depth_map = cv2.bilateralFilter(depth_map.astype(np.float32), 9, 75, 75)
+                # First, apply bilateral filter to preserve edges while smoothing
+                depth_map = cv2.bilateralFilter(depth_map.astype(np.float32), 15, 50, 50)
+                
+                # Then apply Gaussian blur for additional smoothing
+                depth_map = cv2.GaussianBlur(depth_map, (5, 5), 0)
+                
+                # Finally, apply median filter to remove salt-and-pepper noise
+                depth_map = cv2.medianBlur(depth_map.astype(np.uint8), 3).astype(np.float32)
+                
+                # Ensure depth values are within reasonable bounds
+                depth_map = np.clip(depth_map, depth_range[0], depth_range[1])
             
             return depth_map.astype(np.float32)
             
         except Exception as e:
             print(f"Error during depth estimation: {e}")
-            # Fallback to placeholder
+            # Fallback to structured depth map instead of random noise
             height, width = frame.shape[:2]
-            return np.random.uniform(depth_range[0], depth_range[1], (height, width)).astype(np.float32)
+            y_coords, x_coords = np.mgrid[0:height, 0:width]
+            # Create depth gradient from top to bottom
+            depth_map = depth_range[0] + (depth_range[1] - depth_range[0]) * (y_coords / height)
+            return depth_map.astype(np.float32)
     
     def colorize_depth(self, depth_map, depth_range=(1.0, 50.0)):
-        """Convert depth map to color visualization."""
+        """Convert depth map to color visualization with noise reduction."""
         try:
+            # Apply additional smoothing to the depth map before colorization
+            smoothed_depth = cv2.GaussianBlur(depth_map, (3, 3), 0)
+            
             # Normalize depth map to 0-255 with better contrast
             depth_min, depth_max = depth_range
-            normalized_depth = ((depth_map - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
+            normalized_depth = ((smoothed_depth - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
+            
+            # Apply histogram equalization for better contrast
+            normalized_depth = cv2.equalizeHist(normalized_depth)
             
             # Create a more visually appealing colormap
             # Use COLORMAP_INFERNO for better depth perception
             colored_depth = cv2.applyColorMap(normalized_depth, cv2.COLORMAP_INFERNO)
             
-            # Enhance contrast
-            colored_depth = cv2.convertScaleAbs(colored_depth, alpha=1.2, beta=0)
+            # Enhance contrast and reduce noise
+            colored_depth = cv2.convertScaleAbs(colored_depth, alpha=1.3, beta=10)
+            
+            # Apply bilateral filter to reduce color noise while preserving edges
+            colored_depth = cv2.bilateralFilter(colored_depth, 9, 75, 75)
             
             # Add a color legend
             height, width = colored_depth.shape[:2]
             legend_width = 30
-            legend = np.zeros((height, legend_width, 3), dtype=np.uint8)
-            for i in range(height):
-                color = cv2.applyColorMap(np.array([[int(255 * (1 - i/height))]], dtype=np.uint8), cv2.COLORMAP_INFERNO)[0,0]
+            legend_height = height // 2
+            
+            # Create legend gradient
+            legend = np.zeros((legend_height, legend_width, 3), dtype=np.uint8)
+            for i in range(legend_height):
+                ratio = i / legend_height
+                color = cv2.applyColorMap(np.array([[int(ratio * 255)]], dtype=np.uint8), cv2.COLORMAP_INFERNO)[0, 0]
                 legend[i, :] = color
             
-            # Add depth values to legend
-            for i in range(5):
-                y = int(i * height / 4)
-                depth_value = depth_min + (depth_max - depth_min) * (1 - i/4)
-                cv2.putText(legend, f"{depth_value:.1f}m", (2, y + 15),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            # Add legend to the right side
+            colored_depth[0:legend_height, width-legend_width:width] = legend
             
-            # Add model type indicator
-            cv2.putText(legend, self.model_type[:6], (2, height - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            # Add depth labels to legend
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.3
+            thickness = 1
             
-            # Combine depth map with legend
-            colored_depth = np.hstack([colored_depth, legend])
+            # Add depth values
+            for i in range(3):
+                y_pos = int(legend_height * (i / 2))
+                depth_val = depth_max - (depth_max - depth_min) * (i / 2)
+                cv2.putText(colored_depth, f"{depth_val:.1f}m", 
+                           (width - legend_width + 2, y_pos + 10), 
+                           font, font_scale, (255, 255, 255), thickness)
             
             return colored_depth
+            
         except Exception as e:
             print(f"Error colorizing depth map: {e}")
-            return np.zeros_like(depth_map, dtype=np.uint8)
+            # Fallback to grayscale with smoothing
+            try:
+                smoothed_depth = cv2.GaussianBlur(depth_map, (3, 3), 0)
+                normalized_depth = ((smoothed_depth - depth_range[0]) / (depth_range[1] - depth_range[0]) * 255).astype(np.uint8)
+                return cv2.cvtColor(normalized_depth, cv2.COLOR_GRAY2BGR)
+            except:
+                # Final fallback
+                return np.zeros((depth_map.shape[0], depth_map.shape[1], 3), dtype=np.uint8)
     
     def get_depth_at_point(self, depth_map, x, y):
         """Get depth value at a specific point."""
-        if 0 <= y < depth_map.shape[0] and 0 <= x < depth_map.shape[1]:
-            return float(depth_map[y, x])
-        return 0.0
+        try:
+            return float(depth_map[int(y), int(x)])
+        except (IndexError, ValueError):
+            return 0.0
     
     def get_depth_in_region(self, depth_map, bbox, method='median'):
-        """Get depth value in a region defined by bbox."""
+        """Get depth value in a region using specified method."""
         try:
-            x1, y1, x2, y2 = [int(coord) for coord in bbox]
-            
-            # Ensure coordinates are within image bounds
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(depth_map.shape[1] - 1, x2)
-            y2 = min(depth_map.shape[0] - 1, y2)
-            
-            # Extract region
+            x1, y1, x2, y2 = map(int, bbox)
             region = depth_map[y1:y2, x1:x2]
             
-            if region.size == 0:
-                return 0.0
-            
-            # Compute depth based on method
             if method == 'median':
                 return float(np.median(region))
             elif method == 'mean':
                 return float(np.mean(region))
             elif method == 'min':
                 return float(np.min(region))
+            elif method == 'max':
+                return float(np.max(region))
             else:
                 return float(np.median(region))
         except Exception as e:
             print(f"Error getting depth in region: {e}")
-            return 5.0  # Return middle value as fallback 
+            return 0.0 
