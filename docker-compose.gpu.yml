@@ -1,0 +1,62 @@
+version: '3.8'
+services:
+  object-detection-dashboard-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: object-detection-dashboard-gpu
+    ports:
+      - "7070:7070"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONPATH=/app
+      - KMP_DUPLICATE_LIB_OK=TRUE
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia
+    volumes:
+      # Mount models directory for easy model updates
+      - ./data:/app/data
+      - ./yolov8n.pt:/app/yolov8n.pt
+      # Mount output directory for saving results
+      - ./output:/app/output
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7070/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - detection-network
+
+  # Optional: Add a reverse proxy for production
+  nginx:
+    image: nginx:alpine
+    container_name: detection-nginx-gpu
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - object-detection-dashboard-gpu
+    restart: unless-stopped
+    networks:
+      - detection-network
+    profiles:
+      - production
+
+networks:
+  detection-network:
+    driver: bridge
+
+volumes:
+  output:
+    driver: local 
