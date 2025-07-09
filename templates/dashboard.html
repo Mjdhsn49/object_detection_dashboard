@@ -141,6 +141,13 @@
             box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
             transform: translateY(-1px);
         }
+        .btn-primary.warning {
+            background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+        }
+        .btn-primary.warning:hover {
+            background: linear-gradient(135deg, #e67e22 0%, #f39c12 100%);
+            box-shadow: 0 4px 12px rgba(243, 156, 18, 0.2);
+        }
         .btn-danger {
             background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
             color: #fff;
@@ -322,7 +329,10 @@
             <div class="global-controls">
                 <div class="control-group">
                     <label>Base URL:</label>
-                    <input type="text" id="base-url" value="rtmp://simulator.safenavsystem.com" placeholder="Enter RTMP base URL">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="text" id="base-url" value="rtmp://simulator.safenavsystem.com" placeholder="Enter RTMP base URL" style="flex: 1;">
+                        <button class="btn btn-primary" id="refresh-streams-btn" style="padding: 8px 12px; font-size: 0.9em;">🔄</button>
+                    </div>
                 </div>
                 <div class="control-group">
                     <label>Model:</label>
@@ -405,7 +415,29 @@
 
         // Update global controls
         document.getElementById('base-url').addEventListener('input', function() {
-            updateStreamUrls();
+            // Stop all active streams before changing base URL
+            if (Object.values(streamState).some(s => s.isActive)) {
+                showAlert('Stopping all streams before changing base URL...', 'info');
+                stopAllStreams();
+            }
+            
+            // Clear existing stream state when base URL changes
+            Object.keys(streamState).forEach(key => delete streamState[key]);
+            multiVideoContainer.innerHTML = '';
+            updateSystemStatus();
+            
+            // Show helpful message about refreshing
+            const refreshBtn = document.getElementById('refresh-streams-btn');
+            refreshBtn.classList.add('warning');
+            refreshBtn.title = 'Click to refresh streams with new base URL';
+        });
+
+        document.getElementById('refresh-streams-btn').addEventListener('click', function() {
+            showAlert('Refreshing streams...', 'info');
+            // Reset button style
+            this.classList.remove('warning');
+            this.title = '';
+            loadStreams();
         });
 
         document.getElementById('global-model').addEventListener('change', function() {
@@ -427,8 +459,23 @@
             const baseUrl = document.getElementById('base-url').value.trim();
             if (!baseUrl) return;
             
+            // Extract server domain from base URL
+            let serverDomain = baseUrl;
+            if (baseUrl.startsWith('http://')) {
+                serverDomain = baseUrl.replace('http://', '');
+            } else if (baseUrl.startsWith('https://')) {
+                serverDomain = baseUrl.replace('https://', '');
+            } else if (baseUrl.startsWith('rtmp://')) {
+                serverDomain = baseUrl.replace('rtmp://', '');
+            } else if (baseUrl.startsWith('rtmps://')) {
+                serverDomain = baseUrl.replace('rtmps://', '');
+            }
+            
+            // Remove trailing slash and any path
+            serverDomain = serverDomain.split('/')[0];
+            
             Object.values(streamState).forEach(stream => {
-                const rtmpUrl = baseUrl + stream.stream_path;
+                const rtmpUrl = `rtmp://${serverDomain}${stream.stream_path}`;
                 stream.rtmp_url = rtmpUrl;
                 
                 // Update the display if the meta element exists
@@ -441,15 +488,27 @@
 
         // Start all streams
         startAllBtn.addEventListener('click', async function() {
+            // Prevent multiple rapid clicks
+            if (startAllBtn.disabled) return;
+            
             startAllBtn.disabled = true;
             stopAllBtn.disabled = false;
             showAlert('Starting all streams...', 'info');
             
             const streams = Object.values(streamState);
+            console.log(`🚀 Starting ${streams.length} streams:`, streams.map(s => s.stream_path));
+            
             let startedCount = 0;
             
             for (const stream of streams) {
                 try {
+                    // Skip if already active
+                    if (stream.isActive) {
+                        console.log(`⏭️ Skipping ${stream.stream_path} - already active`);
+                        startedCount++;
+                        continue;
+                    }
+                    
                     const config = {
                         rtmp_url: stream.rtmp_url,
                         stream_path: stream.stream_path,
@@ -457,6 +516,8 @@
                         confidence: globalConfig.confidence,
                         iou: globalConfig.iou
                     };
+                    
+                    console.log(`📡 Starting ${stream.stream_path}...`);
                     
                     const response = await fetch('/api/start_detection', {
                         method: 'POST',
@@ -468,6 +529,9 @@
                         startedCount++;
                         stream.isActive = true;
                         stream.statusIndicator.classList.add('active');
+                        console.log(`✅ Started ${stream.stream_path}`);
+                    } else {
+                        console.error(`❌ Failed to start ${stream.stream_path}:`, response.status);
                     }
                 } catch (error) {
                     console.error(`Failed to start stream ${stream.camera_id}:`, error);
@@ -478,11 +542,8 @@
             showAlert(`Started ${startedCount} out of ${streams.length} streams`, 'success');
         });
 
-        // Stop all streams
-        stopAllBtn.addEventListener('click', async function() {
-            stopAllBtn.disabled = true;
-            showAlert('Stopping all streams...', 'info');
-            
+        // Stop all streams function
+        async function stopAllStreams() {
             const streams = Object.values(streamState);
             let stoppedCount = 0;
             
@@ -506,8 +567,17 @@
                 }
             }
             
-            startAllBtn.disabled = false;
             updateSystemStatus();
+            return stoppedCount;
+        }
+
+        // Stop all streams button
+        stopAllBtn.addEventListener('click', async function() {
+            stopAllBtn.disabled = true;
+            showAlert('Stopping all streams...', 'info');
+            
+            const stoppedCount = await stopAllStreams();
+            startAllBtn.disabled = false;
             showAlert(`Stopped ${stoppedCount} streams`, 'info');
         });
 
@@ -525,7 +595,32 @@
         // Fetch available streams and build UI
         async function loadStreams() {
             try {
-                const resp = await fetch('/api/available_streams');
+                const baseUrl = document.getElementById('base-url').value.trim() || 'rtmp://simulator.safenavsystem.com';
+                
+                // Clear existing stream state and UI
+                Object.keys(streamState).forEach(key => delete streamState[key]);
+                multiVideoContainer.innerHTML = '';
+                updateSystemStatus();
+                
+                // Extract server domain from base URL
+                let serverDomain = baseUrl;
+                if (baseUrl.startsWith('http://')) {
+                    serverDomain = baseUrl.replace('http://', '');
+                } else if (baseUrl.startsWith('https://')) {
+                    serverDomain = baseUrl.replace('https://', '');
+                } else if (baseUrl.startsWith('rtmp://')) {
+                    serverDomain = baseUrl.replace('rtmp://', '');
+                } else if (baseUrl.startsWith('rtmps://')) {
+                    serverDomain = baseUrl.replace('rtmps://', '');
+                }
+                
+                // Remove trailing slash and any path
+                serverDomain = serverDomain.split('/')[0];
+                
+                // Construct HTTP API URL
+                const apiUrl = `http://${serverDomain}/stream_params`;
+                
+                const resp = await fetch(`/api/available_streams?base_url=${encodeURIComponent(apiUrl)}`);
                 const data = await resp.json();
                 streamListLoading.style.display = 'none';
                 
@@ -534,12 +629,11 @@
                     return;
                 }
                 
-                multiVideoContainer.innerHTML = '';
+                console.log(`🔄 Loading ${data.streams.length} streams from ${serverDomain}`);
                 data.streams.forEach((stream, idx) => {
                     const stream_path = stream.stream_path;
                     const camera_id = stream.camera_id;
-                    const baseUrl = document.getElementById('base-url').value.trim() || 'rtmp://simulator.safenavsystem.com';
-                    const rtmp_url = baseUrl + stream_path;
+                    const rtmp_url = `rtmp://${serverDomain}${stream_path}`;
                     
                     // Video card
                     const videoCard = document.createElement('div');

@@ -27,8 +27,8 @@ sys.path.append(str(Path(__file__).resolve().parent))
 
 # Import detection modules
 try:
-    from src.models import ObjectDetector, DepthEstimator
-    from src.utils.bbox3d_utils import BBox3DEstimator, BirdEyeView
+    from src.models import ObjectDetector  # , DepthEstimator  # COMMENTED OUT FOR SPEED
+    # from src.utils.bbox3d_utils import BBox3DEstimator, BirdEyeView  # COMMENTED OUT FOR SPEED
     from configs.default_config import Config
     DETECTION_AVAILABLE = True
 except ImportError as e:
@@ -49,9 +49,9 @@ class StreamProcessor:
     def __init__(self):
         self.cap = None
         self.detector = None
-        self.depth_estimator = None
-        self.bbox3d_estimator = None
-        self.bev = None
+        # self.depth_estimator = None  # COMMENTED OUT FOR SPEED
+        # self.bbox3d_estimator = None  # COMMENTED OUT FOR SPEED
+        # self.bev = None  # COMMENTED OUT FOR SPEED
         self.config = None
         self.is_running = False
         
@@ -110,30 +110,30 @@ class StreamProcessor:
                 )
             
             # Initialize depth estimator
-            try:
-                self.depth_estimator = DepthEstimator(
-                    model_type=config.get('depth_model', 'midas'),
-                    model_size=config.get('depth_size', 'small'),
-                    device=device
-                )
-                print("✅ Depth estimator initialized successfully")
-            except Exception as e:
-                print(f"Error initializing depth estimator: {e}")
-                print("Falling back to CPU for depth estimation")
-                self.depth_estimator = DepthEstimator(
-                    model_type=config.get('depth_model', 'midas'),
-                    model_size=config.get('depth_size', 'small'),
-                    device='cpu'
-                )
+            # try:
+            #     self.depth_estimator = DepthEstimator(
+            #         model_type=config.get('depth_model', 'midas'),
+            #         model_size=config.get('depth_size', 'small'),
+            #         device=device
+            #     )
+            #     print("✅ Depth estimator initialized successfully")
+            # except Exception as e:
+            #     print(f"Error initializing depth estimator: {e}")
+            #     print("Falling back to CPU for depth estimation")
+            #     self.depth_estimator = DepthEstimator(
+            #         model_type=config.get('depth_model', 'midas'),
+            #         model_size=config.get('depth_size', 'small'),
+            #         device='cpu'
+            #     )
             
             # Initialize 3D bounding box estimator
-            self.bbox3d_estimator = BBox3DEstimator()
-            print("✅ 3D bounding box estimator initialized")
+            # self.bbox3d_estimator = BBox3DEstimator()
+            # print("✅ 3D bounding box estimator initialized")
             
             # Initialize Bird's Eye View
-            if config.get('enable_bev', True):
-                self.bev = BirdEyeView(scale=60, size=(300, 300))
-                print("✅ Bird's Eye View initialized")
+            # if config.get('enable_bev', True):
+            #     self.bev = BirdEyeView(scale=60, size=(300, 300))
+            #     print("✅ Bird's Eye View initialized")
                 
             return True
             
@@ -180,19 +180,19 @@ class StreamProcessor:
             
             # Depth Estimation
             depth_colored = None
-            if self.config.get('show_depth', True):
-                try:
-                    depth_map = self.depth_estimator.estimate_depth(
-                        original_frame,
-                        depth_range=self.config.get('depth_range', [1.0, 50.0]),
-                        smooth=self.config.get('smooth_depth', True)
-                    )
-                    depth_colored = self.depth_estimator.colorize_depth(
-                        depth_map,
-                        depth_range=self.config.get('depth_range', [1.0, 50.0])
-                    )
-                except Exception as e:
-                    print(f"Depth estimation error: {e}")
+            # if self.config.get('show_depth', True):
+            #     try:
+            #         depth_map = self.depth_estimator.estimate_depth(
+            #             original_frame,
+            #             depth_range=self.config.get('depth_range', [1.0, 50.0]),
+            #             smooth=self.config.get('smooth_depth', True)
+            #         )
+            #         depth_colored = self.depth_estimator.colorize_depth(
+            #             depth_map,
+            #             depth_range=self.config.get('depth_range', [1.0, 50.0])
+            #         )
+            #     except Exception as e:
+            #         print(f"Depth estimation error: {e}")
             
             # Process detections
             boxes_3d = []
@@ -204,12 +204,13 @@ class StreamProcessor:
                     class_name = self.detector.get_class_names()[class_id]
                     
                     # Get depth in the region
-                    if self.depth_estimator and depth_colored is not None:
-                        depth_value = self.depth_estimator.get_depth_in_region(
-                            depth_map, bbox, method='median'
-                        )
-                    else:
-                        depth_value = 0.0
+                    # if self.depth_estimator and depth_colored is not None:
+                    #     depth_value = self.depth_estimator.get_depth_in_region(
+                    #         depth_map, bbox, method='median'
+                    #     )
+                    # else:
+                    #     depth_value = 0.0
+                    depth_value = 0.0  # Set to 0 since depth is disabled
                     
                     box_3d = {
                         'bbox_2d': bbox,
@@ -228,8 +229,8 @@ class StreamProcessor:
                     continue
             
             # Clean up trackers
-            if self.bbox3d_estimator:
-                self.bbox3d_estimator.cleanup_trackers(active_ids)
+            # if self.bbox3d_estimator:
+            #     self.bbox3d_estimator.cleanup_trackers(active_ids)
             
             # Visualize results
             result_frame = self.visualize_results(result_frame, boxes_3d, depth_colored)
@@ -274,53 +275,53 @@ class StreamProcessor:
                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                 
                 # Draw depth value
-                if self.config.get('show_depth', True):
-                    depth_text = f"{depth:.1f}m"
-                    text_size = cv2.getTextSize(depth_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                    cv2.rectangle(frame,
-                                (x1, y2 + 2),
-                                (x1 + text_size[0], y2 + text_size[1] + 6),
-                                color, -1)
-                    cv2.putText(frame, depth_text, (x1, y2 + text_size[1] + 2), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                # if self.config.get('show_depth', True):
+                #     depth_text = f"{depth:.1f}m"
+                #     text_size = cv2.getTextSize(depth_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                #     cv2.rectangle(frame,
+                #                 (x1, y2 + 2),
+                #                 (x1 + text_size[0], y2 + text_size[1] + 6),
+                #                 color, -1)
+                #     cv2.putText(frame, depth_text, (x1, y2 + text_size[1] + 2), 
+                #               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
                     
             except Exception as e:
                 print(f"Error drawing box: {e}")
                 continue
         
         # Draw Bird's Eye View
-        if self.bev is not None and self.config.get('enable_bev', True):
-            try:
-                self.bev.reset()
-                for box_3d in boxes_3d:
-                    self.bev.draw_box(box_3d)
-                bev_image = self.bev.get_image()
-                
-                bev_height = height // 4
-                bev_width = bev_height
-                
-                if bev_height > 0 and bev_width > 0:
-                    bev_resized = cv2.resize(bev_image, (bev_width, bev_height))
-                    frame[height - bev_height:height, 0:bev_width] = bev_resized
-                    cv2.rectangle(frame, 
-                                (0, height - bev_height), 
-                                (bev_width, height), 
-                                (255, 255, 255), 1)
-                    cv2.putText(frame, "Bird's Eye View", 
-                               (10, height - bev_height + 20), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            except Exception as e:
-                print(f"Error drawing BEV: {e}")
+        # if self.bev is not None and self.config.get('enable_bev', True):
+        #     try:
+        #         self.bev.reset()
+        #         for box_3d in boxes_3d:
+        #             self.bev.draw_box(box_3d)
+        #         bev_image = self.bev.get_image()
+        #         
+        #         bev_height = height // 4
+        #         bev_width = bev_height
+        #         
+        #         if bev_height > 0 and bev_width > 0:
+        #             bev_resized = cv2.resize(bev_image, (bev_width, bev_height))
+        #             frame[height - bev_height:height, 0:bev_width] = bev_resized
+        #             cv2.rectangle(frame, 
+        #                         (0, height - bev_height), 
+        #                         (bev_width, height), 
+        #                         (255, 255, 255), 1)
+        #         cv2.putText(frame, "Bird's Eye View", 
+        #                    (10, height - bev_height + 20), 
+        #                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        #     except Exception as e:
+        #         print(f"Error drawing BEV: {e}")
         
         # Add depth visualization
-        if depth_colored is not None and self.config.get('show_depth', True):
-            try:
-                depth_height = height // 4
-                depth_width = int(depth_height * width / height)
-                depth_resized = cv2.resize(depth_colored, (depth_width, depth_height))
-                frame[0:depth_height, 0:depth_width] = depth_resized
-            except Exception as e:
-                print(f"Error adding depth map: {e}")
+        # if depth_colored is not None and self.config.get('show_depth', True):
+        #     try:
+        #         depth_height = height // 4
+        #         depth_width = int(depth_height * width / height)
+        #         depth_resized = cv2.resize(depth_colored, (depth_width, depth_height))
+        #         frame[0:depth_height, 0:depth_width] = depth_resized
+        #     except Exception as e:
+        #         print(f"Error adding depth map: {e}")
         
         return frame
     
@@ -429,8 +430,22 @@ def start_detection():
         confidence = float(data.get('confidence', 0.25))
         iou = float(data.get('iou', 0.45))
         model = data.get('model', '/Users/majeed/Downloads/yolo3d/yolov8n.pt')
+        
+        # Debug logging
+        print(f"🔍 START DETECTION REQUEST:")
+        print(f"   RTMP URL: {rtmp_url}")
+        print(f"   Stream Path: {stream_path}")
+        print(f"   Current active streams: {list(stream_processors.keys())}")
+        print(f"   Total requests so far: {len(stream_processors) + 1}")
+        
         if not rtmp_url or not stream_path:
             return jsonify({'error': 'RTMP URL and stream_path are required'}), 400
+            
+        # Check if this stream is already running
+        if stream_path in stream_processors and stream_processors[stream_path].is_running:
+            print(f"⚠️ Stream {stream_path} is already running, skipping duplicate start")
+            return jsonify({'message': f'Stream {stream_path} is already running'}), 200
+            
         # Stop any existing detection for this stream
         stop_detection_flags[stream_path] = True
         if stream_path in detection_threads and detection_threads[stream_path].is_alive():
@@ -500,11 +515,40 @@ def get_status():
 def available_streams():
     """Fetch available RTMP streams from the simulator."""
     try:
-        resp = requests.get('http://simulator.safenavsystem.com/stream_params', timeout=5)
+        # Get base URL from query parameter or use default
+        base_url = request.args.get('base_url', 'http://simulator.safenavsystem.com')
+        
+        # Parse the base URL to extract the server domain
+        if base_url.startswith('http://'):
+            server_domain = base_url.replace('http://', '')
+        elif base_url.startswith('https://'):
+            server_domain = base_url.replace('https://', '')
+        elif base_url.startswith('rtmp://'):
+            server_domain = base_url.replace('rtmp://', '')
+        elif base_url.startswith('rtmps://'):
+            server_domain = base_url.replace('rtmps://', '')
+        else:
+            server_domain = base_url
+        
+        # Remove trailing slash and any path
+        server_domain = server_domain.split('/')[0]
+        
+        # Construct HTTP API URL for stream parameters
+        stream_params_url = f"http://{server_domain}/stream_params"
+        
+        print(f"Fetching streams from: {stream_params_url}")
+        
+        resp = requests.get(stream_params_url, timeout=10)
         resp.raise_for_status()
         streams = resp.json()
+        
+        # Add server domain to each stream for RTMP URL construction
+        for stream in streams:
+            stream['server_domain'] = server_domain
+        
         return jsonify({'streams': streams})
     except Exception as e:
+        print(f"Error fetching streams: {e}")
         return jsonify({'error': f'Failed to fetch streams: {str(e)}'}), 500
 
 @app.route('/api/gpu_status', methods=['GET'])
