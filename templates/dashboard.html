@@ -724,6 +724,11 @@
             showAlert(`Error: ${data.message}`, 'error');
         });
         
+        // Frame display optimization with aggressive lag prevention
+        let lastFrameTime = {};
+        let frameDropCount = {};
+        const MAX_FRAME_AGE_MS = 100; // Drop frames older than 100ms
+        
         socket.on('frame', function(data) {
             if (!data.stream_path) {
                 return;
@@ -738,14 +743,54 @@
             }
             
             try {
+                const currentTime = Date.now();
+                const streamPath = data.stream_path;
+                
+                // Initialize counters
+                if (!lastFrameTime[streamPath]) {
+                    lastFrameTime[streamPath] = 0;
+                    frameDropCount[streamPath] = 0;
+                }
+                
+                // Calculate frame age
+                const serverTimestamp = data.timestamp || currentTime;
+                const frameAge = currentTime - serverTimestamp;
+                const timeSinceLastFrame = currentTime - lastFrameTime[streamPath];
+                
+                // Aggressive frame dropping for low latency
+                if (frameAge > MAX_FRAME_AGE_MS) {
+                    frameDropCount[streamPath]++;
+                    if (frameDropCount[streamPath] % 10 === 0) {
+                        console.log(`🗑️ Dropped ${frameDropCount[streamPath]} old frames for ${streamPath} (age: ${frameAge}ms)`);
+                    }
+                    return;
+                }
+                
+                // Skip frames if they're coming too fast (prevent browser overload)
+                if (timeSinceLastFrame < 33) { // Max 30 FPS display
+                    return;
+                }
+                
                 const videoEl = streamState[data.stream_path].videoEl;
                 const imageSrc = 'data:image/jpeg;base64,' + data.image;
                 
-                // Update the image source
-                videoEl.src = imageSrc;
+                // Use requestAnimationFrame for smooth display
+                requestAnimationFrame(() => {
+                    try {
+                        videoEl.src = imageSrc;
+                        lastFrameTime[streamPath] = currentTime;
+                        
+                        // Log frame display metrics less frequently
+                        if (frameDropCount[streamPath] % 100 === 0 && frameDropCount[streamPath] > 0) {
+                            console.log(`📊 ${streamPath}: Age ${frameAge}ms, Dropped ${frameDropCount[streamPath]} frames`);
+                        }
+                    } catch (error) {
+                        console.log('❌ Error in frame display:', error);
+                    }
+                });
                 
             } catch (error) {
-                console.log('❌ Error displaying frame:', error);
+                console.log('❌ Error processing frame:', error);
             }
         });
         

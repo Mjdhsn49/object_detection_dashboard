@@ -17,10 +17,12 @@ import numpy as np
 import threading
 import json
 import base64
+import subprocess
+import signal
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO, emit
-import queue
+# import queue  # Removed - using real-time processing without queues
 import logging
 import torch
 import requests
@@ -54,22 +56,28 @@ current_configs = {}  # key: stream_path, value: config
 class StreamProcessor:
     def __init__(self):
         self.cap = None
+        self.ffmpeg_process = None  # FFmpeg subprocess for direct RTMP
+        self.use_ffmpeg_direct = True  # Use FFmpeg by default
         self.detector = None
         # self.depth_estimator = None  # COMMENTED OUT FOR SPEED
         # self.bbox3d_estimator = None  # COMMENTED OUT FOR SPEED
         # self.bev = None  # COMMENTED OUT FOR SPEED
         self.config = None
         self.is_running = False
+        self.raw_stream_mode = False  # Skip detection for ultra-low latency
         
-        # Parallel processing components
-        self.frame_queue = queue.Queue(maxsize=3)  # Latest frame queue
-        self.result_queue = queue.Queue(maxsize=2)  # Detection results queue
+        # Real-time processing components - NO QUEUES, ONLY LATEST FRAMES
         self.frame_reader_thread = None
         self.detection_thread = None
-        self.latest_frame = None
-        self.latest_result = None
+        self.latest_raw_frame = None  # Latest frame from RTMP
+        self.latest_processed_frame = None  # Latest frame with detection
         self.frame_lock = threading.Lock()
-        self.result_lock = threading.Lock()
+        self.detection_processing = False  # Flag to prevent overlapping detection
+        self.frame_timestamp = 0  # Timestamp of latest frame
+        self.detection_skip_count = 0  # Count of skipped detections for stats
+        self.frame_width = 1920  # Expected frame dimensions
+        self.frame_height = 1080
+        self.ffmpeg_fps = 30  # Target FPS for FFmpeg
         
     def initialize_models(self, config):
         """Initialize detection models with GPU optimization."""
@@ -176,14 +184,22 @@ class StreamProcessor:
             # Method 1: Try with RTMP-specific settings
             print(f"🔗 Attempting to open RTMP: {rtmp_url}")
             
-            # Set OpenCV FFmpeg options for RTMP
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtmp_live=1;rtmp_buffer=0;fflags=nobuffer;flags=low_delay"
+            # Set OpenCV FFmpeg options for RTMP - ULTRA LOW LATENCY
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                "rtmp_live=1;"
+                "rtmp_buffer=0;"
+                "fflags=nobuffer+flush_packets;"
+                "flags=low_delay;"
+                "analyzeduration=0;"
+                "probesize=32;"
+                "max_delay=0"
+            )
             
             # Create VideoCapture with RTMP-specific settings
             self.cap = cv2.VideoCapture(rtmp_url, cv2.CAP_FFMPEG)
             
-            # Set additional properties for RTMP
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
+            # Set additional properties for RTMP - REAL-TIME OPTIMIZED
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)  # NO BUFFER - Real-time mode
             self.cap.set(cv2.CAP_PROP_FPS, 30)  # Expected FPS
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)  # Expected width
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)  # Expected height
@@ -227,11 +243,18 @@ class StreamProcessor:
             if self.cap is not None:
                 self.cap.release()
             
-            # Method 2: Try with different FFmpeg options for RTMP
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtmp_live=1;fflags=nobuffer;flags=low_delay"
+            # Method 2: Try with different FFmpeg options for RTMP - ULTRA LOW LATENCY
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                "rtmp_live=1;"
+                "fflags=nobuffer+flush_packets;"
+                "flags=low_delay;"
+                "analyzeduration=0;"
+                "probesize=32;"
+                "max_delay=0"
+            )
             
             self.cap = cv2.VideoCapture(rtmp_url, cv2.CAP_FFMPEG)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)  # NO BUFFER - Real-time mode
             
             # Set additional properties for low latency
             self.cap.set(cv2.CAP_PROP_FPS, 30)
@@ -427,6 +450,19 @@ class StreamProcessor:
         
         return frame
     
+    def _cleanup_ffmpeg(self):
+        """Clean up FFmpeg process."""
+        if self.ffmpeg_process:
+            try:
+                self.ffmpeg_process.terminate()
+                self.ffmpeg_process.wait(timeout=2)
+            except:
+                try:
+                    self.ffmpeg_process.kill()
+                except:
+                    pass
+            self.ffmpeg_process = None
+    
     def run_detection(self, rtmp_url, config, stop_flag_key):
         """Main detection loop with PARALLEL PROCESSING for maximum real-time performance."""
         global stop_detection_flags
@@ -457,7 +493,7 @@ class StreamProcessor:
             
             self.is_running = True
             
-            # PARALLEL PROCESSING SETUP
+            # REAL-TIME PROCESSING SETUP
             stream_start_time = time.time()
             frame_count = 0
             processed_count = 0
@@ -492,11 +528,13 @@ class StreamProcessor:
             processing_times = []
             frame_timing_history = []
             
-            # PARALLEL PROCESSING MODE
-            max_lag_threshold = 0.05  # Maximum 50ms lag allowed (ultra-low)
+            # ULTRA-LOW LATENCY PROCESSING MODE - AGGRESSIVE THRESHOLDS
+            max_lag_threshold = 0.005 if self.raw_stream_mode else 0.015  # 5ms for raw, 15ms for detection
             
             # MINIMAL LOGGING
-            print(f"⚡ PARALLEL PROCESSING MODE (max lag: {max_lag_threshold}s)")
+            mode_str = "RAW STREAM" if self.raw_stream_mode else "DETECTION"
+            method_str = "FFMPEG" if self.use_ffmpeg_direct else "OPENCV"
+            print(f"⚡ {mode_str} MODE with {method_str} (max lag: {max_lag_threshold}s)")
             
             # Pre-allocate GPU tensors for faster processing
             if torch.cuda.is_available():
@@ -509,8 +547,8 @@ class StreamProcessor:
                 # MINIMAL LOGGING
                 print("🔥 GPU ready")
             
-            # START PARALLEL THREADS
-            print(f"🔄 Starting parallel threads for: {stop_flag_key}")
+            # START ULTRA-LOW LATENCY THREADS
+            print(f"🚀 Starting ultra-low latency threads for: {stop_flag_key}")
             
             # Start frame reader thread
             self.frame_reader_thread = threading.Thread(
@@ -531,7 +569,7 @@ class StreamProcessor:
             # REDUCED LOGGING FREQUENCY
             log_interval = 30  # Log every 30 frames instead of 10
             
-            # MAIN DISPLAY LOOP - Only handles display and metrics
+            # MAIN REAL-TIME DISPLAY LOOP - Only handles display and metrics
             while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
                 current_time = time.time()
                 
@@ -539,10 +577,10 @@ class StreamProcessor:
                 expected_frame_time = stream_start_time + (frame_count * frame_interval)
                 current_lag = current_time - expected_frame_time
                 
-                # Get latest frame from parallel reader
+                # Get latest frame from real-time reader
                 frame = self.get_latest_frame()
                 if frame is None:
-                    time.sleep(0.01)  # Wait for frame
+                    time.sleep(0.001)  # Minimal wait for frame
                     continue
                 
                 frame_count += 1
@@ -560,7 +598,7 @@ class StreamProcessor:
                             target_fps = actual_fps
                             frame_interval = 1.0 / target_fps
                 
-                # Get latest detection result from parallel worker
+                # Get latest detection result from real-time worker
                 processed_frame = self.get_latest_result()
                 if processed_frame is None:
                     # No detection result yet, use original frame
@@ -616,8 +654,12 @@ class StreamProcessor:
                     # Determine sync status
                     sync_status = "🟢 SYNC" if final_lag <= max_lag_threshold else "🔴 LAG"
                     
-                    # Add parallel processing info
-                    parallel_info = f"Parallel: {self.frame_queue.qsize()}/{self.result_queue.qsize()}"
+                    # Add ultra-low latency processing info
+                    frame_age = self.get_frame_age()
+                    mode_str = "RAW" if self.raw_stream_mode else "DET"
+                    method_str = "FFM" if self.use_ffmpeg_direct else "OCV"
+                    processing_status = "PROCESSING" if self.detection_processing else "READY"
+                    parallel_info = f"{mode_str}+{method_str}: {frame_age:.1f}ms | {processing_status}"
                     
                     socketio.emit('fps_update', {
                         'fps': f'{actual_fps:.1f}', 
@@ -632,8 +674,15 @@ class StreamProcessor:
                         'buffer_info': parallel_info
                     })
                 
-                # ULTRA-FAST FRAME ENCODING AND SENDING
+                # ULTRA-FAST FRAME ENCODING AND SENDING WITH AGGRESSIVE DROP
                 try:
+                    # Get current frame age and drop if too old
+                    frame_age = self.get_frame_age()
+                    if frame_age > 50:  # Drop frames older than 50ms
+                        if processed_count % 30 == 0:  # Log drops occasionally
+                            print(f"🗑️ DROP: Frame too old ({frame_age:.1f}ms)")
+                        continue
+                    
                     # Resize frame for web display (optimized)
                     height, width = processed_frame.shape[:2]
                     max_width = 640
@@ -643,23 +692,34 @@ class StreamProcessor:
                         new_height = int(height * scale)
                         processed_frame = cv2.resize(processed_frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
                     
-                    # Encode to JPEG with lower quality for speed
-                    _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])  # Lower quality for speed
+                    # Encode to JPEG with optimized settings for real-time
+                    encode_params = [
+                        cv2.IMWRITE_JPEG_QUALITY, 70,  # Reduced quality for speed
+                        cv2.IMWRITE_JPEG_OPTIMIZE, 0,  # No optimization for speed
+                        cv2.IMWRITE_JPEG_PROGRESSIVE, 0  # No progressive for speed
+                    ]
+                    _, buffer = cv2.imencode('.jpg', processed_frame, encode_params)
                     frame_data = base64.b64encode(buffer).decode('utf-8')
                     
-                    # Send frame to web client
-                    socketio.emit('frame', {'image': frame_data, 'stream_path': stop_flag_key})
+                    # Send frame to web client with server timestamp
+                    server_timestamp = time.time() * 1000  # Current time in milliseconds
+                    socketio.emit('frame', {
+                        'image': frame_data, 
+                        'stream_path': stop_flag_key,
+                        'timestamp': server_timestamp,
+                        'frame_age_ms': frame_age
+                    })
                     
-                    # Debug: Log successful frame sends
-                    if processed_count % 30 == 0:  # Log every 30th frame
-                        print(f"📤 Frame sent: {processed_frame.shape} -> {len(frame_data)} chars")
+                    # Debug: Log successful frame sends - reduced frequency
+                    if processed_count % 120 == 0:  # Log every 120th frame
+                        print(f"📤 ULTRA-LOW Frame sent: {processed_frame.shape} -> {len(frame_data)} chars, age: {frame_age:.1f}ms")
                     
                 except Exception as e:
                     # MINIMAL ERROR LOGGING
-                    if processed_count % 100 == 0:  # Log errors every 100 frames
+                    if processed_count % 300 == 0:  # Log errors every 300 frames
                         print(f"❌ Frame error: {e}")
                 
-                # NO SLEEP - Maximum speed
+                # NO SLEEP - Maximum real-time speed
                 
         except Exception as e:
             print(f"❌ Detection error: {e}")
@@ -669,10 +729,10 @@ class StreamProcessor:
             self.cleanup()
     
     def _frame_reader_worker(self, rtmp_url, stop_flag_key):
-        """Worker thread for reading frames from RTMP stream."""
+        """Worker thread for reading frames from RTMP stream - REAL-TIME MODE."""
         global stop_detection_flags
         
-        print(f"📸 Frame reader started for: {rtmp_url}")
+        print(f"📸 REAL-TIME Frame reader started for: {rtmp_url}")
         frame_count = 0
         
         while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
@@ -688,89 +748,111 @@ class StreamProcessor:
                             time.sleep(0.1)
                             continue
                     else:
-                        time.sleep(0.01)  # Short delay if no frame
+                        time.sleep(0.001)  # Minimal delay if no frame
                     continue
                 
                 frame_count += 1
+                current_time = time.time()
                 
-                # Update latest frame with lock
+                # AGGRESSIVE FRAME REPLACEMENT - ALWAYS LATEST ONLY
                 with self.frame_lock:
-                    self.latest_frame = frame.copy()
+                    # Check if frame is fresh enough to use
+                    if self.frame_timestamp > 0:
+                        frame_gap = current_time - self.frame_timestamp
+                        if frame_gap < 0.01:  # Skip if frames coming too fast (< 10ms gap)
+                            continue
+                    
+                    self.latest_raw_frame = frame  # Direct replacement, no copy for speed
+                    self.frame_timestamp = current_time
                 
-                # Put frame in queue (drop old frames if queue is full)
-                try:
-                    self.frame_queue.put_nowait(frame)
-                except queue.Full:
-                    # Remove old frame and add new one
-                    try:
-                        self.frame_queue.get_nowait()
-                        self.frame_queue.put_nowait(frame)
-                    except:
-                        pass
-                
-                # Debug logging
-                if frame_count % 30 == 0:
-                    print(f"📸 Frame reader: {frame_count} frames read from {rtmp_url}")
+                # Debug logging - reduced frequency
+                if frame_count % 60 == 0:  # Every 60 frames instead of 30
+                    print(f"📸 REAL-TIME: {frame_count} frames, skipped: {self.detection_skip_count}")
                 
             except Exception as e:
                 print(f"❌ Frame reader error: {e}")
-                time.sleep(0.1)
+                time.sleep(0.01)
         
-        print(f"📸 Frame reader stopped for: {rtmp_url}")
+        print(f"📸 REAL-TIME Frame reader stopped for: {rtmp_url}")
     
     def _detection_worker(self, stop_flag_key):
-        """Worker thread for processing frames with detection."""
+        """Worker thread for processing frames with detection - ULTRA LOW LATENCY MODE."""
         global stop_detection_flags
         
-        print(f"🔍 Detection worker started for: {stop_flag_key}")
+        mode_str = "RAW STREAM" if self.raw_stream_mode else "DETECTION"
+        print(f"🚀 {mode_str} worker started for: {stop_flag_key}")
         processed_count = 0
         
         while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
             try:
-                # Get frame from queue
-                try:
-                    frame = self.frame_queue.get(timeout=0.1)  # 100ms timeout
-                except queue.Empty:
+                # Check if already processing - if so, skip this cycle (only for detection mode)
+                if not self.raw_stream_mode and self.detection_processing:
+                    self.detection_skip_count += 1
+                    time.sleep(0.001)  # Minimal wait
                     continue
                 
-                # Process frame with detection
-                processed_frame = self.process_frame(frame)
+                # Get latest frame if available
+                frame_to_process = None
+                with self.frame_lock:
+                    if self.latest_raw_frame is not None:
+                        if self.raw_stream_mode:
+                            # Raw mode: use frame directly, no copy
+                            frame_to_process = self.latest_raw_frame
+                        else:
+                            # Detection mode: copy frame for processing
+                            frame_to_process = self.latest_raw_frame.copy()
+                            self.detection_processing = True  # Set processing flag
                 
-                # Update latest result with lock
-                with self.result_lock:
-                    self.latest_result = processed_frame
+                if frame_to_process is None:
+                    time.sleep(0.001)  # Minimal wait if no frame
+                    continue
                 
-                # Put result in queue (drop old results if queue is full)
-                try:
-                    self.result_queue.put_nowait(processed_frame)
-                except queue.Full:
-                    try:
-                        self.result_queue.get_nowait()
-                        self.result_queue.put_nowait(processed_frame)
-                    except:
-                        pass
+                # Process frame based on mode
+                if self.raw_stream_mode:
+                    # Raw stream mode: no processing, just pass through
+                    processed_frame = frame_to_process
+                else:
+                    # Detection mode: run object detection
+                    processed_frame = self.process_frame(frame_to_process)
+                
+                # Update latest result - ALWAYS replace with newest
+                with self.frame_lock:
+                    self.latest_processed_frame = processed_frame
+                    if not self.raw_stream_mode:
+                        self.detection_processing = False  # Clear processing flag
                 
                 processed_count += 1
                 
-                # Debug logging
-                if processed_count % 30 == 0:
-                    print(f"🔍 Detection worker: {processed_count} frames processed")
+                # Debug logging - reduced frequency
+                if processed_count % 60 == 0:  # Every 60 frames instead of 30
+                    skip_info = f", {self.detection_skip_count} skipped" if not self.raw_stream_mode else ""
+                    print(f"🚀 {mode_str}: {processed_count} processed{skip_info}")
                 
             except Exception as e:
-                print(f"❌ Detection worker error: {e}")
+                print(f"❌ {mode_str} worker error: {e}")
+                if not self.raw_stream_mode:
+                    with self.frame_lock:
+                        self.detection_processing = False  # Clear flag on error
                 time.sleep(0.01)
         
-        print(f"🔍 Detection worker stopped for: {stop_flag_key}")
+        print(f"🚀 {mode_str} worker stopped for: {stop_flag_key}")
     
     def get_latest_frame(self):
-        """Get the latest frame with thread safety."""
+        """Get the latest raw frame with thread safety."""
         with self.frame_lock:
-            return self.latest_frame.copy() if self.latest_frame is not None else None
+            return self.latest_raw_frame.copy() if self.latest_raw_frame is not None else None
     
     def get_latest_result(self):
         """Get the latest detection result with thread safety."""
-        with self.result_lock:
-            return self.latest_result.copy() if self.latest_result is not None else None
+        with self.frame_lock:
+            return self.latest_processed_frame.copy() if self.latest_processed_frame is not None else None
+    
+    def get_frame_age(self):
+        """Get age of current frame in milliseconds."""
+        with self.frame_lock:
+            if self.frame_timestamp > 0:
+                return (time.time() - self.frame_timestamp) * 1000
+            return 0
     
     def cleanup(self):
         """Clean up resources."""
@@ -783,18 +865,14 @@ class StreamProcessor:
         if self.detection_thread and self.detection_thread.is_alive():
             self.detection_thread.join(timeout=1)
         
-        # Clear queues
-        while not self.frame_queue.empty():
-            try:
-                self.frame_queue.get_nowait()
-            except:
-                pass
+        # Clear latest frames
+        with self.frame_lock:
+            self.latest_raw_frame = None
+            self.latest_processed_frame = None
+            self.detection_processing = False
         
-        while not self.result_queue.empty():
-            try:
-                self.result_queue.get_nowait()
-            except:
-                pass
+        # Clean up FFmpeg process
+        self._cleanup_ffmpeg()
         
         # Release capture
         if self.cap:
@@ -819,9 +897,13 @@ def start_detection():
         iou = float(data.get('iou', 0.45))
         model = data.get('model', 'data/other_models/default_model/yolov8n.pt')
         boat_only_filter = data.get('boat_only_filter', True)  # Default to boat-only filtering
+        raw_stream_mode = data.get('raw_stream_mode', False)  # Ultra-low latency mode
+        use_ffmpeg_direct = data.get('use_ffmpeg_direct', True)  # Use FFmpeg by default
         
         # Debug logging
-        print(f"🔍 Starting detection for: {stream_path}")
+        mode_str = "RAW STREAM" if raw_stream_mode else "DETECTION"
+        method_str = "FFMPEG" if use_ffmpeg_direct else "OPENCV"
+        print(f"🚀 Starting {mode_str} mode with {method_str} for: {stream_path}")
         
         if not rtmp_url or not stream_path:
             return jsonify({'error': 'RTMP URL and stream_path are required'}), 400
@@ -852,12 +934,16 @@ def start_detection():
             'device': 'auto',
             'depth_range': [1.0, 50.0],
             'smooth_depth': True,
-            'filter_boat_only': boat_only_filter # Add the new configuration
+            'filter_boat_only': boat_only_filter,
+            'raw_stream_mode': raw_stream_mode,  # Ultra-low latency mode
+            'use_ffmpeg_direct': use_ffmpeg_direct  # FFmpeg direct method
         }
         current_configs[stream_path] = config
         # Start new detection thread for this stream
         stop_detection_flags[stream_path] = False
         processor = StreamProcessor()
+        processor.raw_stream_mode = raw_stream_mode
+        processor.use_ffmpeg_direct = use_ffmpeg_direct
         stream_processors[stream_path] = processor
         detection_threads[stream_path] = threading.Thread(
             target=processor.run_detection,
@@ -865,7 +951,9 @@ def start_detection():
         )
         detection_threads[stream_path].daemon = True
         detection_threads[stream_path].start()
-        return jsonify({'message': f'Detection started for {stream_path}'})
+        
+        mode_msg = "Raw stream" if raw_stream_mode else "Detection"
+        return jsonify({'message': f'{mode_msg} started for {stream_path}'})
     except Exception as e:
         return jsonify({'error': f'Failed to start detection: {str(e)}'}), 500
 
@@ -963,6 +1051,52 @@ def get_gpu_status():
             'gpu_available': False,
             'error': str(e)
         }), 500
+
+@app.route('/api/start_raw_stream', methods=['POST'])
+def start_raw_stream():
+    """Start ultra-low latency raw stream (no detection)."""
+    try:
+        data = request.get_json()
+        data['raw_stream_mode'] = True
+        data['use_ffmpeg_direct'] = True
+        return start_detection()  # Reuse the main detection endpoint
+    except Exception as e:
+        return jsonify({'error': f'Failed to start raw stream: {str(e)}'}), 500
+
+@app.route('/api/ffmpeg_status', methods=['GET'])
+def get_ffmpeg_status():
+    """Check if FFmpeg is available on the system."""
+    try:
+        # Test FFmpeg availability
+        result = subprocess.run(['ffmpeg', '-version'], 
+                              capture_output=True, 
+                              text=True, 
+                              timeout=5)
+        
+        if result.returncode == 0:
+            # Extract version info
+            version_line = result.stdout.split('\n')[0]
+            return jsonify({
+                'ffmpeg_available': True,
+                'version': version_line,
+                'recommended': True
+            })
+        else:
+            return jsonify({
+                'ffmpeg_available': False,
+                'message': 'FFmpeg not working properly'
+            })
+            
+    except FileNotFoundError:
+        return jsonify({
+            'ffmpeg_available': False,
+            'message': 'FFmpeg not installed'
+        })
+    except Exception as e:
+        return jsonify({
+            'ffmpeg_available': False,
+            'error': str(e)
+        })
 
 @socketio.on('connect')
 def handle_connect():
