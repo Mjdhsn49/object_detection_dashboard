@@ -5,6 +5,11 @@ Web Dashboard for Object Detection on RTMP Streams
 
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
+# Set default stream host environment variable
+if 'STREAM_HOST' not in os.environ:
+    os.environ['STREAM_HOST'] = 'http://simulator.safenavsystem.com/'
+
 import sys
 import time
 import cv2
@@ -55,6 +60,16 @@ class StreamProcessor:
         # self.bev = None  # COMMENTED OUT FOR SPEED
         self.config = None
         self.is_running = False
+        
+        # Parallel processing components
+        self.frame_queue = queue.Queue(maxsize=3)  # Latest frame queue
+        self.result_queue = queue.Queue(maxsize=2)  # Detection results queue
+        self.frame_reader_thread = None
+        self.detection_thread = None
+        self.latest_frame = None
+        self.latest_result = None
+        self.frame_lock = threading.Lock()
+        self.result_lock = threading.Lock()
         
     def initialize_models(self, config):
         """Initialize detection models with GPU optimization."""
@@ -156,21 +171,94 @@ class StreamProcessor:
             return False
     
     def open_stream(self, rtmp_url):
-        """Open RTMP stream."""
+        """Open RTMP stream with proper FFmpeg settings and fallback options."""
         try:
-            # Release previous capture if exists
-            if self.cap is not None:
-                self.cap.release()
-            self.cap = cv2.VideoCapture()
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1024)
+            # Method 1: Try with RTMP-specific settings
+            print(f"🔗 Attempting to open RTMP: {rtmp_url}")
             
-            if not self.cap.open(rtmp_url):
-                raise RuntimeError(f"Failed to open stream: {rtmp_url}")
-                
+            # Set OpenCV FFmpeg options for RTMP
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtmp_live=1;rtmp_buffer=0;fflags=nobuffer;flags=low_delay"
+            
+            # Create VideoCapture with RTMP-specific settings
+            self.cap = cv2.VideoCapture(rtmp_url, cv2.CAP_FFMPEG)
+            
+            # Set additional properties for RTMP
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
+            self.cap.set(cv2.CAP_PROP_FPS, 30)  # Expected FPS
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)  # Expected width
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)  # Expected height
+            
+            # Try to set timeout for RTMP connection (may not be available in all OpenCV versions)
+            try:
+                self.cap.set(cv2.CAP_PROP_TIMEOUT, 5000)  # 5 second timeout
+            except:
+                pass  # Timeout property not available
+            
+            if not self.cap.isOpened():
+                print(f"❌ Method 1 failed, trying fallback...")
+                return self._open_stream_fallback(rtmp_url)
+            
+            # Test if we can read at least one frame with retry
+            test_frame = None
+            for attempt in range(3):
+                ret, test_frame = self.cap.read()
+                if ret and test_frame is not None:
+                    break
+                time.sleep(0.1)  # Wait 100ms between attempts
+            
+            if not ret or test_frame is None:
+                print(f"❌ Cannot read test frame after 3 attempts, trying fallback...")
+                return self._open_stream_fallback(rtmp_url)
+            
+            print(f"✅ RTMP stream opened successfully: {rtmp_url}")
+            print(f"📐 Frame size: {test_frame.shape}")
             return True
             
         except Exception as e:
-            print(f"Error opening stream: {e}")
+            print(f"❌ Error opening RTMP stream {rtmp_url}: {e}")
+            return self._open_stream_fallback(rtmp_url)
+    
+    def _open_stream_fallback(self, rtmp_url):
+        """Fallback method for opening RTMP streams."""
+        try:
+            print(f"🔄 Trying fallback method for: {rtmp_url}")
+            
+            # Release previous capture
+            if self.cap is not None:
+                self.cap.release()
+            
+            # Method 2: Try with different FFmpeg options for RTMP
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtmp_live=1;fflags=nobuffer;flags=low_delay"
+            
+            self.cap = cv2.VideoCapture(rtmp_url, cv2.CAP_FFMPEG)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            # Set additional properties for low latency
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
+            
+            if not self.cap.isOpened():
+                print(f"❌ Fallback method also failed")
+                return False
+            
+            # Test frame read with retry
+            test_frame = None
+            for attempt in range(3):
+                ret, test_frame = self.cap.read()
+                if ret and test_frame is not None:
+                    break
+                time.sleep(0.1)  # Wait 100ms between attempts
+            
+            if not ret or test_frame is None:
+                print(f"❌ Fallback cannot read frame after 3 attempts")
+                return False
+            
+            print(f"✅ Fallback RTMP stream opened: {rtmp_url}")
+            print(f"📐 Frame size: {test_frame.shape}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Fallback method failed: {e}")
             return False
     
     def process_frame(self, frame):
@@ -340,7 +428,7 @@ class StreamProcessor:
         return frame
     
     def run_detection(self, rtmp_url, config, stop_flag_key):
-        """Main detection loop with GPU optimization and real-time frame processing."""
+        """Main detection loop with PARALLEL PROCESSING for maximum real-time performance."""
         global stop_detection_flags
         
         try:
@@ -349,7 +437,7 @@ class StreamProcessor:
                 socketio.emit('error', {'message': 'Failed to initialize detection models'})
                 return
             
-            # Open stream
+            # Open stream with ultra-low latency settings
             if not self.open_stream(rtmp_url):
                 socketio.emit('error', {'message': f'Failed to open stream: {rtmp_url}'})
                 return
@@ -359,6 +447,7 @@ class StreamProcessor:
                 socketio.emit('error', {'message': f'Stream is not opened: {rtmp_url}'})
                 return
             
+            # MINIMAL LOGGING - Only essential messages
             print(f"🔗 Stream opened: {rtmp_url}")
             
             # Test if we can read at least one frame
@@ -368,49 +457,129 @@ class StreamProcessor:
             
             self.is_running = True
             
+            # PARALLEL PROCESSING SETUP
+            stream_start_time = time.time()
             frame_count = 0
             processed_count = 0
-            start_time = time.time()
+            last_frame_time = 0
+            target_fps = 30
+            frame_interval = 1.0 / target_fps
             
-            # Performance monitoring
+            # MAXIMUM GPU OPTIMIZATION
+            if torch.cuda.is_available():
+                # Set maximum GPU performance
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cudnn.deterministic = False
+                torch.backends.cudnn.enabled = True
+                torch.backends.cudnn.allow_tf32 = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                
+                # Clear GPU cache and set memory fraction
+                torch.cuda.empty_cache()
+                torch.cuda.set_per_process_memory_fraction(0.98)  # Use 98% of GPU memory
+                
+                # Set GPU to maximum performance mode
+                torch.cuda.set_device(0)
+                device = torch.device('cuda:0')
+                
+                # MINIMAL LOGGING
+                print(f"🚀 MAX GPU OPT")
+            else:
+                device = torch.device('cpu')
+                print("⚠️ Using CPU - performance will be limited")
+            
+            # Performance monitoring - REDUCED FOR SPEED
             processing_times = []
+            frame_timing_history = []
             
+            # PARALLEL PROCESSING MODE
+            max_lag_threshold = 0.05  # Maximum 50ms lag allowed (ultra-low)
+            
+            # MINIMAL LOGGING
+            print(f"⚡ PARALLEL PROCESSING MODE (max lag: {max_lag_threshold}s)")
+            
+            # Pre-allocate GPU tensors for faster processing
+            if torch.cuda.is_available():
+                dummy_input = torch.zeros((1, 3, 640, 640), device=device, dtype=torch.float16)
+                # Warm up GPU with multiple passes
+                with torch.no_grad():
+                    for _ in range(3):  # Reduced warm-up for speed
+                        _ = self.detector.model(dummy_input)
+                    torch.cuda.synchronize()
+                # MINIMAL LOGGING
+                print("🔥 GPU ready")
+            
+            # START PARALLEL THREADS
+            print(f"🔄 Starting parallel threads for: {stop_flag_key}")
+            
+            # Start frame reader thread
+            self.frame_reader_thread = threading.Thread(
+                target=self._frame_reader_worker,
+                args=(rtmp_url, stop_flag_key),
+                daemon=True
+            )
+            self.frame_reader_thread.start()
+            
+            # Start detection worker thread
+            self.detection_thread = threading.Thread(
+                target=self._detection_worker,
+                args=(stop_flag_key,),
+                daemon=True
+            )
+            self.detection_thread.start()
+            
+            # REDUCED LOGGING FREQUENCY
+            log_interval = 30  # Log every 30 frames instead of 10
+            
+            # MAIN DISPLAY LOOP - Only handles display and metrics
             while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
-                # Simple frame reading without buffering issues
-                ret, frame = self.cap.read()
-                if not ret:
-                    print(f"❌ Failed to read frame from stream: {rtmp_url}")
-                    # Try to reconnect if stream fails
-                    if not self.cap.isOpened():
-                        print(f"🔄 Stream disconnected, attempting to reconnect: {rtmp_url}")
-                        if not self.open_stream(rtmp_url):
-                            print(f"❌ Failed to reconnect to stream: {rtmp_url}")
-                            time.sleep(1)
-                            continue
-                    time.sleep(0.01)
+                current_time = time.time()
+                
+                # Calculate expected frame time for RTMP timing display
+                expected_frame_time = stream_start_time + (frame_count * frame_interval)
+                current_lag = current_time - expected_frame_time
+                
+                # Get latest frame from parallel reader
+                frame = self.get_latest_frame()
+                if frame is None:
+                    time.sleep(0.01)  # Wait for frame
                     continue
                 
                 frame_count += 1
+                last_frame_time = current_time
                 
-                # Process the frame immediately
-                process_start = time.time()
-                processed_frame = self.process_frame(frame)
-                process_time = time.time() - process_start
-                processing_times.append(process_time)
+                # Detect actual FPS from stream timing - REDUCED FREQUENCY
+                if len(frame_timing_history) < 10:  # Reduced for faster adaptation
+                    frame_timing_history.append(current_time)
+                else:
+                    frame_timing_history.pop(0)
+                    frame_timing_history.append(current_time)
+                    if len(frame_timing_history) >= 2:
+                        actual_fps = len(frame_timing_history) / (frame_timing_history[-1] - frame_timing_history[0])
+                        if 15 <= actual_fps <= 60:
+                            target_fps = actual_fps
+                            frame_interval = 1.0 / target_fps
                 
-                # Keep only recent processing times
-                if len(processing_times) > 30:
-                    processing_times.pop(0)
+                # Get latest detection result from parallel worker
+                processed_frame = self.get_latest_result()
+                if processed_frame is None:
+                    # No detection result yet, use original frame
+                    processed_frame = frame
+                
+                # Calculate frames behind
+                frames_behind = int(current_lag / frame_interval) if frame_interval > 0 else 0
                 
                 processed_count += 1
                 
-                # Calculate and emit performance metrics
-                if processed_count % 15 == 0:
+                # Calculate and emit performance metrics - REDUCED FREQUENCY
+                if processed_count % log_interval == 0:
                     current_time = time.time()
-                    avg_process_time = sum(processing_times) / len(processing_times) if processing_times else 0
-                    actual_fps = processed_count / (current_time - start_time)
+                    actual_fps = processed_count / (current_time - stream_start_time)
                     
-                    # GPU monitoring
+                    # Recalculate final lag
+                    final_lag = current_time - expected_frame_time
+                    
+                    # GPU monitoring - SIMPLIFIED
                     gpu_info = {}
                     if torch.cuda.is_available():
                         try:
@@ -418,7 +587,8 @@ class StreamProcessor:
                                 'gpu_used': True,
                                 'gpu_name': torch.cuda.get_device_name(0),
                                 'gpu_memory_used': f"{torch.cuda.memory_allocated(0) / 1024**3:.2f} GB",
-                                'gpu_memory_total': f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
+                                'gpu_memory_total': f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB",
+                                'gpu_memory_percent': f"{(torch.cuda.memory_allocated(0) / torch.cuda.get_device_properties(0).total_memory) * 100:.1f}%"
                             }
                             # Try to get GPU utilization if pynvml is available
                             try:
@@ -427,15 +597,14 @@ class StreamProcessor:
                                 handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                                 utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
                                 gpu_info['gpu_utilization'] = f"{utilization.gpu}%"
+                                gpu_info['gpu_memory_utilization'] = f"{utilization.memory}%"
                             except:
-                                gpu_info['gpu_utilization'] = "N/A (pynvml not available)"
+                                gpu_info['gpu_utilization'] = "N/A"
+                                gpu_info['gpu_memory_utilization'] = "N/A"
                         except Exception as e:
                             gpu_info = {
                                 'gpu_used': True,
                                 'gpu_name': 'GPU Available',
-                                'gpu_memory_used': 'N/A',
-                                'gpu_memory_total': 'N/A',
-                                'gpu_utilization': 'N/A',
                                 'error': str(e)
                             }
                     else:
@@ -444,51 +613,193 @@ class StreamProcessor:
                             'message': 'CUDA not available'
                         }
                     
+                    # Determine sync status
+                    sync_status = "🟢 SYNC" if final_lag <= max_lag_threshold else "🔴 LAG"
+                    
+                    # Add parallel processing info
+                    parallel_info = f"Parallel: {self.frame_queue.qsize()}/{self.result_queue.qsize()}"
+                    
                     socketio.emit('fps_update', {
                         'fps': f'{actual_fps:.1f}', 
                         'stream_path': stop_flag_key,
-                        'lag': '0.00s',  # No lag with latest frame processing
-                        'avg_process_time': f'{avg_process_time*1000:.1f}ms',
-                        'gpu_info': gpu_info
+                        'lag': f'{final_lag:.3f}s',  # Show 3 decimal places for precision
+                        'avg_process_time': f'Parallel',  # Parallel processing
+                        'gpu_info': gpu_info,
+                        'rtmp_fps': f'{target_fps:.1f}',
+                        'frames_behind': frames_behind,
+                        'sync_status': sync_status,
+                        'max_lag': f'{max_lag_threshold}s',
+                        'buffer_info': parallel_info
                     })
                 
-                # Encode and send frame
+                # ULTRA-FAST FRAME ENCODING AND SENDING
                 try:
-                    # Resize frame for web display
+                    # Resize frame for web display (optimized)
                     height, width = processed_frame.shape[:2]
                     max_width = 640
                     if width > max_width:
                         scale = max_width / width
                         new_width = int(width * scale)
                         new_height = int(height * scale)
-                        processed_frame = cv2.resize(processed_frame, (new_width, new_height))
+                        processed_frame = cv2.resize(processed_frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
                     
-                    # Encode to JPEG
-                    _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    # Encode to JPEG with lower quality for speed
+                    _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])  # Lower quality for speed
                     frame_data = base64.b64encode(buffer).decode('utf-8')
                     
                     # Send frame to web client
                     socketio.emit('frame', {'image': frame_data, 'stream_path': stop_flag_key})
                     
+                    # Debug: Log successful frame sends
+                    if processed_count % 30 == 0:  # Log every 30th frame
+                        print(f"📤 Frame sent: {processed_frame.shape} -> {len(frame_data)} chars")
+                    
                 except Exception as e:
-                    print(f"❌ Error encoding/sending frame: {e}")
+                    # MINIMAL ERROR LOGGING
+                    if processed_count % 100 == 0:  # Log errors every 100 frames
+                        print(f"❌ Frame error: {e}")
                 
-                # No sleep - maximum FPS for powerful systems
+                # NO SLEEP - Maximum speed
                 
         except Exception as e:
-            print(f"❌ Error in detection loop: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Detection error: {e}")
             socketio.emit('error', {'message': f'Detection error: {str(e)}', 'stream_path': stop_flag_key})
         
         finally:
             self.cleanup()
     
+    def _frame_reader_worker(self, rtmp_url, stop_flag_key):
+        """Worker thread for reading frames from RTMP stream."""
+        global stop_detection_flags
+        
+        print(f"📸 Frame reader started for: {rtmp_url}")
+        frame_count = 0
+        
+        while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
+            try:
+                # Read frame from RTMP stream
+                ret, frame = self.cap.read()
+                
+                if not ret:
+                    # Check if stream is still open
+                    if not self.cap.isOpened():
+                        print(f"🔄 Frame reader reconnecting: {rtmp_url}")
+                        if not self.open_stream(rtmp_url):
+                            time.sleep(0.1)
+                            continue
+                    else:
+                        time.sleep(0.01)  # Short delay if no frame
+                    continue
+                
+                frame_count += 1
+                
+                # Update latest frame with lock
+                with self.frame_lock:
+                    self.latest_frame = frame.copy()
+                
+                # Put frame in queue (drop old frames if queue is full)
+                try:
+                    self.frame_queue.put_nowait(frame)
+                except queue.Full:
+                    # Remove old frame and add new one
+                    try:
+                        self.frame_queue.get_nowait()
+                        self.frame_queue.put_nowait(frame)
+                    except:
+                        pass
+                
+                # Debug logging
+                if frame_count % 30 == 0:
+                    print(f"📸 Frame reader: {frame_count} frames read from {rtmp_url}")
+                
+            except Exception as e:
+                print(f"❌ Frame reader error: {e}")
+                time.sleep(0.1)
+        
+        print(f"📸 Frame reader stopped for: {rtmp_url}")
+    
+    def _detection_worker(self, stop_flag_key):
+        """Worker thread for processing frames with detection."""
+        global stop_detection_flags
+        
+        print(f"🔍 Detection worker started for: {stop_flag_key}")
+        processed_count = 0
+        
+        while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
+            try:
+                # Get frame from queue
+                try:
+                    frame = self.frame_queue.get(timeout=0.1)  # 100ms timeout
+                except queue.Empty:
+                    continue
+                
+                # Process frame with detection
+                processed_frame = self.process_frame(frame)
+                
+                # Update latest result with lock
+                with self.result_lock:
+                    self.latest_result = processed_frame
+                
+                # Put result in queue (drop old results if queue is full)
+                try:
+                    self.result_queue.put_nowait(processed_frame)
+                except queue.Full:
+                    try:
+                        self.result_queue.get_nowait()
+                        self.result_queue.put_nowait(processed_frame)
+                    except:
+                        pass
+                
+                processed_count += 1
+                
+                # Debug logging
+                if processed_count % 30 == 0:
+                    print(f"🔍 Detection worker: {processed_count} frames processed")
+                
+            except Exception as e:
+                print(f"❌ Detection worker error: {e}")
+                time.sleep(0.01)
+        
+        print(f"🔍 Detection worker stopped for: {stop_flag_key}")
+    
+    def get_latest_frame(self):
+        """Get the latest frame with thread safety."""
+        with self.frame_lock:
+            return self.latest_frame.copy() if self.latest_frame is not None else None
+    
+    def get_latest_result(self):
+        """Get the latest detection result with thread safety."""
+        with self.result_lock:
+            return self.latest_result.copy() if self.latest_result is not None else None
+    
     def cleanup(self):
         """Clean up resources."""
         self.is_running = False
+        
+        # Stop parallel threads
+        if self.frame_reader_thread and self.frame_reader_thread.is_alive():
+            self.frame_reader_thread.join(timeout=1)
+        
+        if self.detection_thread and self.detection_thread.is_alive():
+            self.detection_thread.join(timeout=1)
+        
+        # Clear queues
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except:
+                pass
+        
+        while not self.result_queue.empty():
+            try:
+                self.result_queue.get_nowait()
+            except:
+                pass
+        
+        # Release capture
         if self.cap:
             self.cap.release()
+        
         socketio.emit('status', {'message': 'Detection stopped'})
 
 @app.route('/')

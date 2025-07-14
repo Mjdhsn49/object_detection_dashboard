@@ -751,8 +751,49 @@
         
         socket.on('fps_update', function(data) {
             if (data.stream_path && streamState[data.stream_path]) {
-                streamState[data.stream_path].fpsEl.textContent = data.fps;
-                streamState[data.stream_path].currentFps = data.fps;
+                const stream = streamState[data.stream_path];
+                stream.fpsEl.textContent = data.fps;
+                stream.currentFps = data.fps;
+                
+                // Update RTMP timing information
+                if (data.rtmp_fps) {
+                    const lag = parseFloat(data.lag || 0);
+                    const maxLag = parseFloat(data.max_lag || 0.3);
+                    const isInSync = lag <= maxLag;
+                    
+                    let rtmpInfo = `RTMP: ${data.rtmp_fps} FPS`;
+                    
+                    // Add sync status
+                    if (data.sync_status) {
+                        const syncColor = isInSync ? '#27ae60' : '#e74c3c';
+                        rtmpInfo += ` | ${data.sync_status}`;
+                    }
+                    
+                    // Add lag info
+                    if (data.lag) {
+                        const lagColor = isInSync ? '#27ae60' : '#e74c3c';
+                        rtmpInfo += ` | Lag: <span style="color: ${lagColor}; font-weight: bold;">${data.lag}</span>`;
+                    }
+                    
+                    // Add max lag threshold
+                    if (data.max_lag) {
+                        rtmpInfo += ` | Max: ${data.max_lag}`;
+                    }
+                    
+                    // Add buffer drop info
+                    if (data.buffer_info) {
+                        const bufferColor = data.buffer_info.includes('dropped') ? '#e74c3c' : '#27ae60';
+                        rtmpInfo += ` | <span style="color: ${bufferColor}">${data.buffer_info}</span>`;
+                    }
+                    
+                    // Update the video meta section to show RTMP timing
+                    const videoCard = stream.videoEl.closest('.video-card');
+                    const metaElements = videoCard.querySelectorAll('.video-meta');
+                    if (metaElements.length >= 3) {
+                        metaElements[2].innerHTML = rtmpInfo;
+                    }
+                }
+                
                 updateSystemStatus();
             }
         });

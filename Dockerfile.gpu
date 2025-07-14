@@ -54,11 +54,14 @@ COPY requirements.txt web_requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir -r web_requirements.txt
 
-# Copy application code
-COPY . .
+# Copy only necessary files first (for better caching)
+COPY templates/ ./templates/
+COPY configs/ ./configs/
+COPY src/ ./src/
+COPY yolov8n.pt ./
 
-# Create templates directory
-RUN mkdir -p templates
+# Copy the main application file last
+COPY web_dashboard.py ./
 
 # Expose port
 EXPOSE 7080

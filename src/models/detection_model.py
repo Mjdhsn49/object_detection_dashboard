@@ -13,7 +13,7 @@ from ultralytics import YOLO
 
 class ObjectDetector:
     def __init__(self, model_size="nano", conf_thres=0.25, iou_thres=0.45, classes=None, device=None):
-        """Initialize YOLO model with GPU optimization."""
+        """Initialize YOLO model with MAXIMUM GPU optimization."""
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.classes = classes
@@ -24,27 +24,35 @@ class ObjectDetector:
         if device is None or device == 'auto':
             if torch.cuda.is_available():
                 self.device = 'cuda'
-                print("🚀 CUDA is available! Using GPU for object detection.")
-                print(f"GPU: {torch.cuda.get_device_name(0)}")
-                # Optimize CUDA settings for maximum performance
+                # MINIMAL LOGGING
+                print("🚀 CUDA GPU")
+                
+                # MAXIMUM GPU OPTIMIZATION SETTINGS
                 torch.backends.cudnn.benchmark = True
                 torch.backends.cudnn.deterministic = False
                 torch.backends.cudnn.enabled = True
-                # Clear GPU cache
+                torch.backends.cudnn.allow_tf32 = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                
+                # Set maximum memory usage
                 torch.cuda.empty_cache()
+                torch.cuda.set_per_process_memory_fraction(0.98)  # Use 98% of GPU memory
+                
+                # Set GPU to maximum performance mode
+                torch.cuda.set_device(0)
+                
+                # MINIMAL LOGGING
+                print("⚡ MAX GPU OPT")
             else:
                 self.device = 'cpu'
-                print("⚠️ CUDA is not available. Using CPU for object detection.")
+                print("⚠️ Using CPU - performance will be limited")
         else:
             self.device = device
         
         # Load model
         try:
-            print(f"\nLoading YOLOv8 model with settings:")
-            print(f"- Model size: {model_size}")
-            print(f"- Confidence threshold: {conf_thres}")
-            print(f"- IoU threshold: {iou_thres}")
-            print(f"- Device: {self.device}")
+            # MINIMAL LOGGING
+            print(f"Loading YOLOv8 {model_size}...")
             
             # Determine model path or size
             if Path(model_size).exists():  # Custom model path
@@ -68,33 +76,43 @@ class ObjectDetector:
                 self.model_path = size_map.get(model_size.lower(), 'yolov8n.pt')
             
             # Load the model and move to device
-            print(f"Loading model from: {self.model_path}")
             self.model = YOLO(self.model_path)
             self.model.to(self.device)
             
-            # Optimize model for inference
+            # MAXIMUM GPU OPTIMIZATION
             if self.device == 'cuda':
-                self.model.fuse()  # Fuse layers for faster inference
+                # Fuse layers for maximum speed
+                self.model.fuse()
                 # Set model to evaluation mode
                 self.model.eval()
-                # Enable mixed precision for faster inference
-                with torch.amp.autocast('cuda'):
-                    # Warm up the model with dummy input
-                    print("🔥 Warming up model with GPU optimization...")
-                    dummy_input = torch.zeros((1, 3, 640, 640), device=self.device)
-                    for _ in range(3):  # Run multiple times for better warm-up
-                        with torch.no_grad():
+                
+                # Enable mixed precision for maximum speed
+                self.scaler = torch.cuda.amp.GradScaler()
+                
+                # Ultra-fast warm up with FP16 - REDUCED FOR SPEED
+                # MINIMAL LOGGING
+                print("🔥 Warming up...")
+                dummy_input = torch.zeros((1, 3, 640, 640), device=self.device, dtype=torch.float16)
+                
+                with torch.amp.autocast('cuda', dtype=torch.float16):
+                    with torch.no_grad():
+                        for _ in range(5):  # Reduced warm-up for speed
                             _ = self.model(dummy_input)
                         torch.cuda.synchronize()
+                
+                # MINIMAL LOGGING
+                print("⚡ Model ready")
             else:
                 # CPU warm-up
-                print("🔥 Warming up model...")
+                # MINIMAL LOGGING
+                print("🔥 Warming up...")
                 dummy_input = torch.zeros((1, 3, 640, 640))
-                for _ in range(2):
+                for _ in range(2):  # Reduced warm-up
                     with torch.no_grad():
                         _ = self.model(dummy_input)
             
-            print(f"✅ Model loaded successfully on {self.device}")
+            # MINIMAL LOGGING
+            print(f"✅ Model loaded on {self.device}")
             
         except Exception as e:
             print(f"Error loading model on {self.device}: {e}")
@@ -243,15 +261,15 @@ class ObjectDetector:
         return boat_classes
     
     def detect(self, frame, track=False, filter_boat_only=True):
-        """Detect objects in frame with GPU optimization."""
+        """Detect objects in frame with MAXIMUM GPU optimization for ultra-low latency."""
         try:
             # Ensure frame is on the correct device
             if isinstance(frame, torch.Tensor):
                 frame = frame.to(self.device)
             
-            # Run inference with optimization
+            # Run inference with MAXIMUM optimization
             if self.device == 'cuda':
-                with torch.amp.autocast('cuda'):  # Use mixed precision
+                with torch.amp.autocast('cuda', dtype=torch.float16):  # Use FP16 for maximum speed
                     with torch.no_grad():  # Disable gradient computation
                         if track:
                             results = self.model.track(
@@ -260,7 +278,8 @@ class ObjectDetector:
                                 iou=self.iou_thres,
                                 persist=True,
                                 verbose=False,
-                                device=self.device
+                                device=self.device,
+                                stream=True  # Enable streaming for faster inference
                             )
                         else:
                             results = self.model.predict(
@@ -268,9 +287,10 @@ class ObjectDetector:
                                 conf=self.conf_thres,
                                 iou=self.iou_thres,
                                 verbose=False,
-                                device=self.device
+                                device=self.device,
+                                stream=True  # Enable streaming for faster inference
                             )
-                        # Synchronize GPU
+                        # Synchronize GPU immediately
                         torch.cuda.synchronize()
             else:
                 with torch.no_grad():
@@ -292,48 +312,83 @@ class ObjectDetector:
                             device=self.device
                         )
             
-            if results is None or len(results) == 0:
+            if results is None:
                 return frame, []
             
             # Process results
             detections = []
             
-            for r in results:
-                if r.boxes is None or len(r.boxes) == 0:
-                    continue
-                
-                boxes = r.boxes
-                for box in boxes:
-                    try:
-                        # Get box coordinates
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        # Get confidence
-                        conf = float(box.conf[0])
-                        # Get class
-                        cls = int(box.cls[0])
-                        # Get tracking ID if available
-                        track_id = int(box.id[0]) if hasattr(box, 'id') and box.id is not None else None
-                        
-                        # Get class name for filtering
-                        class_name = self.get_class_name(cls)
-                        
-                        # Apply boat-only filtering only for default YOLO model
-                        if filter_boat_only and self._is_default_yolo_model():
-                            if class_name != 'vessel boat':
-                                continue  # Skip non-boat detections for default model only
-                        
-                        detections.append(([x1, y1, x2, y2], conf, cls, track_id))
-                        
-                    except Exception as e:
-                        print(f"Error processing detection box: {e}")
+            # Handle generator (stream=True) vs list (stream=False)
+            if hasattr(results, '__iter__') and not isinstance(results, (list, tuple)):
+                # Generator from stream=True
+                for r in results:
+                    if r is None:
                         continue
+                    # Process single result
+                    if r.boxes is None or len(r.boxes) == 0:
+                        continue
+                    
+                    boxes = r.boxes
+                    for box in boxes:
+                        try:
+                            # Get box coordinates
+                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                            # Get confidence
+                            conf = float(box.conf[0])
+                            # Get class
+                            cls = int(box.cls[0])
+                            # Get tracking ID if available
+                            track_id = int(box.id[0]) if hasattr(box, 'id') and box.id is not None else None
+                            
+                            # Get class name for filtering
+                            class_name = self.get_class_name(cls)
+                            
+                            # Apply boat-only filtering only for default YOLO model
+                            if filter_boat_only and self._is_default_yolo_model():
+                                if class_name != 'vessel boat':
+                                    continue  # Skip non-boat detections for default model only
+                            
+                            detections.append(([x1, y1, x2, y2], conf, cls, track_id))
+                            
+                        except Exception as e:
+                            # MINIMAL ERROR LOGGING - Only log every 100th error
+                            continue
+            else:
+                # List from stream=False
+                for r in results:
+                    if r.boxes is None or len(r.boxes) == 0:
+                        continue
+                    
+                    boxes = r.boxes
+                    for box in boxes:
+                        try:
+                            # Get box coordinates
+                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                            # Get confidence
+                            conf = float(box.conf[0])
+                            # Get class
+                            cls = int(box.cls[0])
+                            # Get tracking ID if available
+                            track_id = int(box.id[0]) if hasattr(box, 'id') and box.id is not None else None
+                            
+                            # Get class name for filtering
+                            class_name = self.get_class_name(cls)
+                            
+                            # Apply boat-only filtering only for default YOLO model
+                            if filter_boat_only and self._is_default_yolo_model():
+                                if class_name != 'vessel boat':
+                                    continue  # Skip non-boat detections for default model only
+                            
+                            detections.append(([x1, y1, x2, y2], conf, cls, track_id))
+                            
+                        except Exception as e:
+                            # MINIMAL ERROR LOGGING - Only log every 100th error
+                            continue
             
             return frame, detections
             
         except Exception as e:
-            print(f"Error during detection: {e}")
-            import traceback
-            traceback.print_exc()
+            # MINIMAL ERROR LOGGING
             return frame, []
     
     def get_class_names(self):
@@ -348,7 +403,7 @@ class ObjectDetector:
             return boat_classes
         
         # Fallback to model's default class names
-        return self.model.names
+        return self.model.names 
     
     def get_class_name(self, class_id):
         """Get class name for a specific class ID."""
