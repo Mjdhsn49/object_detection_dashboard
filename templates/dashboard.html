@@ -115,6 +115,11 @@
             width: 100%;
             box-sizing: border-box;
         }
+        .control-group input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #667eea;
+        }
         .value-display {
             font-size: 0.85em;
             color: #667eea;
@@ -338,8 +343,8 @@
                     <label>Model:</label>
                     <select id="global-model">
                         <option value="data/other_models/default_model/yolov8n.pt">YOLOv8n (Default)</option>
-                        <option value="data/other_models/cross_model/weights/best.pt">Cross Model (best.pt)</option>
-                        <option value="data/other_models/Infrared/weights/best.onnx">Infrared Model (best.onnx)</option>
+                        <option value="data/other_models/cross_model/weights/best.onnx">Cross Model (best.onnx)</option>
+                        <option value="data/other_models/Infrared/weights/best.pt">Infrared Model (best.pt)</option>
                     </select>
                 </div>
                 <div class="control-group">
@@ -349,6 +354,13 @@
                 <div class="control-group">
                     <label>IoU: <span id="global-iou-value">0.45</span></label>
                     <input type="range" id="global-iou" min="0.1" max="1.0" step="0.05" value="0.45">
+                </div>
+                <div class="control-group">
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="boat-only-filter" checked>
+                        <span>Boat Only Filter</span>
+                    </label>
+                    <small style="color: #666; font-size: 0.85em;">Only detect vessel boats (applies to default YOLO model only)</small>
                 </div>
                 <button class="btn btn-primary" id="start-all-btn">🚀 Start All Streams</button>
                 <button class="btn btn-danger" id="stop-all-btn" disabled>⏹️ Stop All Streams</button>
@@ -397,7 +409,8 @@
         let globalConfig = {
             model: 'data/other_models/default_model/yolov8n.pt',
             confidence: 0.25,
-            iou: 0.45
+            iou: 0.45,
+            boat_only_filter: true
         };
 
         // Show alert function
@@ -442,6 +455,17 @@
 
         document.getElementById('global-model').addEventListener('change', function() {
             globalConfig.model = this.value;
+            
+            // Show/hide boat-only filter based on model selection
+            const boatFilterContainer = document.getElementById('boat-only-filter').parentElement.parentElement;
+            if (this.value.includes('yolov8n.pt')) {
+                boatFilterContainer.style.display = 'block';
+            } else {
+                boatFilterContainer.style.display = 'none';
+                // Uncheck the filter when using non-default models
+                document.getElementById('boat-only-filter').checked = false;
+                globalConfig.boat_only_filter = false;
+            }
         });
 
         document.getElementById('global-confidence').addEventListener('input', function() {
@@ -452,6 +476,10 @@
         document.getElementById('global-iou').addEventListener('input', function() {
             globalConfig.iou = parseFloat(this.value);
             document.getElementById('global-iou-value').textContent = this.value;
+        });
+
+        document.getElementById('boat-only-filter').addEventListener('change', function() {
+            globalConfig.boat_only_filter = this.checked;
         });
 
         // Update stream URLs when base URL changes
@@ -514,7 +542,8 @@
                         stream_path: stream.stream_path,
                         model: globalConfig.model,
                         confidence: globalConfig.confidence,
-                        iou: globalConfig.iou
+                        iou: globalConfig.iou,
+                        boat_only_filter: globalConfig.boat_only_filter
                     };
                     
                     console.log(`📡 Starting ${stream.stream_path}...`);
@@ -629,7 +658,6 @@
                     return;
                 }
                 
-                console.log(`🔄 Loading ${data.streams.length} streams from ${serverDomain}`);
                 data.streams.forEach((stream, idx) => {
                     const stream_path = stream.stream_path;
                     const camera_id = stream.camera_id;
@@ -674,12 +702,14 @@
 
         // Socket.IO event handlers
         socket.on('connect', function() {
+            console.log('🔗 WebSocket connected to server');
             statusText.textContent = 'Connected';
             statusDot.classList.add('active');
             showAlert('Connected to detection server', 'success');
         });
         
         socket.on('disconnect', function() {
+            console.log('❌ WebSocket disconnected from server');
             statusText.textContent = 'Disconnected';
             statusDot.classList.remove('active');
             showAlert('Disconnected from server', 'error');
@@ -690,12 +720,32 @@
         });
         
         socket.on('error', function(data) {
+            console.log('❌ Error received:', data.message);
             showAlert(`Error: ${data.message}`, 'error');
         });
         
         socket.on('frame', function(data) {
-            if (data.stream_path && streamState[data.stream_path]) {
-                streamState[data.stream_path].videoEl.src = 'data:image/jpeg;base64,' + data.image;
+            if (!data.stream_path) {
+                return;
+            }
+            
+            if (!streamState[data.stream_path]) {
+                return;
+            }
+            
+            if (!data.image) {
+                return;
+            }
+            
+            try {
+                const videoEl = streamState[data.stream_path].videoEl;
+                const imageSrc = 'data:image/jpeg;base64,' + data.image;
+                
+                // Update the image source
+                videoEl.src = imageSrc;
+                
+            } catch (error) {
+                console.log('❌ Error displaying frame:', error);
             }
         });
         
@@ -723,6 +773,15 @@
         // Load streams on page load
         loadStreams();
         checkGPUStatus();
+        
+        // Initialize boat-only filter visibility based on default model
+        const defaultModel = document.getElementById('global-model').value;
+        const boatFilterContainer = document.getElementById('boat-only-filter').parentElement.parentElement;
+        if (!defaultModel.includes('yolov8n.pt')) {
+            boatFilterContainer.style.display = 'none';
+            document.getElementById('boat-only-filter').checked = false;
+            globalConfig.boat_only_filter = false;
+        }
     </script>
 </body>
 </html> 

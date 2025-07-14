@@ -422,7 +422,7 @@ def process_frame(frame, detector, depth_estimator, bbox3d_estimator, bev, confi
     for detection in detections:
         try:
             bbox, score, class_id, obj_id = detection
-            class_name = detector.get_class_names()[class_id]
+            class_name = detector.get_class_name(class_id)
             
             # Get depth in the region
             depth_value = depth_estimator.get_depth_in_region(depth_map, bbox, method='median')

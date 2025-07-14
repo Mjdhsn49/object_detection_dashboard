@@ -45,7 +45,7 @@ RUN python3 -m pip install --upgrade pip
 
 # Install PyTorch with CUDA and Ultralytics YOLO
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-RUN pip install ultralytics
+RUN pip install ultralytics pynvml
 
 # Copy requirements first for better caching
 COPY requirements.txt web_requirements.txt ./
@@ -61,11 +61,11 @@ COPY . .
 RUN mkdir -p templates
 
 # Expose port
-EXPOSE 7070
+EXPOSE 7080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:7070/api/status || exit 1
+    CMD curl -f http://localhost:7080/api/status || exit 1
 
 # Run the application
 CMD ["python3", "web_dashboard.py"] 

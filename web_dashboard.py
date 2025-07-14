@@ -4,6 +4,7 @@ Web Dashboard for Object Detection on RTMP Streams
 """
 
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import sys
 import time
 import cv2
@@ -37,7 +38,7 @@ except ImportError as e:
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'object-detection-dashboard-2024'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Global variables
 stream_processors = {}  # key: stream_path, value: StreamProcessor
@@ -81,13 +82,15 @@ class StreamProcessor:
             # Only allow three local models (relative paths for Docker)
             allowed_models = [
                 'data/other_models/default_model/yolov8n.pt',
-                'data/other_models/cross_model/weights/best.pt',
-                'data/other_models/Infrared/weights/best.onnx'
+                'data/other_models/cross_model/weights/best.onnx',
+                'data/other_models/Infrared/weights/best.pt'
             ]
             model_path = config.get('model', allowed_models[0])
             if model_path not in allowed_models:
-                print(f"Model {model_path} not allowed. Using default model.")
+                print(f"⚠️ Model {model_path} not allowed. Using default model.")
                 model_path = allowed_models[0]
+            
+            print(f"Loading model from: {model_path}")
             
             try:
                 self.detector = ObjectDetector(
@@ -97,7 +100,16 @@ class StreamProcessor:
                     classes=None,
                     device=device
                 )
-                print("✅ Object detector initialized successfully")
+                
+                # Verify GPU usage
+                if hasattr(self.detector, 'model') and hasattr(self.detector.model, 'device'):
+                    model_device = str(self.detector.model.device)
+                    if 'cuda' in model_device:
+                        print(f"GPU Memory allocated: {torch.cuda.memory_allocated(0) / 1024**3:.2f} GB")
+                    else:
+                        print("⚠️ Model is on CPU")
+                else:
+                    print("⚠️ Could not verify model device")
             except Exception as e:
                 print(f"Error initializing object detector: {e}")
                 print("Falling back to CPU for object detection")
@@ -175,7 +187,8 @@ class StreamProcessor:
             # Object Detection
             detection_frame, detections = self.detector.detect(
                 detection_frame, 
-                track=self.config.get('enable_tracking', True)
+                track=self.config.get('enable_tracking', True),
+                filter_boat_only=self.config.get('filter_boat_only', True)  # Use configurable filter
             )
             
             # Depth Estimation
@@ -201,7 +214,7 @@ class StreamProcessor:
             for detection in detections:
                 try:
                     bbox, score, class_id, obj_id = detection
-                    class_name = self.detector.get_class_names()[class_id]
+                    class_name = self.detector.get_class_name(class_id)
                     
                     # Get depth in the region
                     # if self.depth_estimator and depth_colored is not None:
@@ -260,11 +273,12 @@ class StreamProcessor:
                 x1, y1, x2, y2 = map(int, bbox)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 
-                # Draw text
+                # Draw text with class name
+                class_name = box_3d['class_name']
                 if obj_id is not None:
-                    text = f"ID:{int(obj_id)} {score:.2f}"
+                    text = f"{class_name} ID:{int(obj_id)} {score:.2f}"
                 else:
-                    text = f"{score:.2f}"
+                    text = f"{class_name} {score:.2f}"
                 
                 text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
                 cv2.rectangle(frame, 
@@ -326,7 +340,7 @@ class StreamProcessor:
         return frame
     
     def run_detection(self, rtmp_url, config, stop_flag_key):
-        """Main detection loop with GPU optimization."""
+        """Main detection loop with GPU optimization and real-time frame processing."""
         global stop_detection_flags
         
         try:
@@ -340,68 +354,131 @@ class StreamProcessor:
                 socketio.emit('error', {'message': f'Failed to open stream: {rtmp_url}'})
                 return
             
-            socketio.emit('status', {'message': f'Detection started successfully for {rtmp_url}'})
+            # Verify stream is open and has frames
+            if not self.cap.isOpened():
+                socketio.emit('error', {'message': f'Stream is not opened: {rtmp_url}'})
+                return
+            
+            print(f"🔗 Stream opened: {rtmp_url}")
+            
+            # Test if we can read at least one frame
+            test_ret, test_frame = self.cap.read()
+            if not test_ret:
+                print(f"❌ Cannot read test frame - stream may be empty")
+            
             self.is_running = True
             
             frame_count = 0
+            processed_count = 0
             start_time = time.time()
             
-            # Optimize frame processing for higher FPS
-            frame_skip = 0  # Process every frame for maximum quality
-            max_fps = 30   # Target FPS
+            # Performance monitoring
+            processing_times = []
             
             while not stop_detection_flags.get(stop_flag_key, False) and self.is_running:
+                # Simple frame reading without buffering issues
                 ret, frame = self.cap.read()
                 if not ret:
-                    print("Failed to read frame from stream")
-                    time.sleep(0.01)  # Reduced sleep for faster recovery
+                    print(f"❌ Failed to read frame from stream: {rtmp_url}")
+                    # Try to reconnect if stream fails
+                    if not self.cap.isOpened():
+                        print(f"🔄 Stream disconnected, attempting to reconnect: {rtmp_url}")
+                        if not self.open_stream(rtmp_url):
+                            print(f"❌ Failed to reconnect to stream: {rtmp_url}")
+                            time.sleep(1)
+                            continue
+                    time.sleep(0.01)
                     continue
                 
-                # Frame skipping for performance (optional)
                 frame_count += 1
-                if frame_skip > 0 and frame_count % (frame_skip + 1) != 0:
-                    continue
                 
-                # Process frame
+                # Process the frame immediately
+                process_start = time.time()
                 processed_frame = self.process_frame(frame)
+                process_time = time.time() - process_start
+                processing_times.append(process_time)
                 
-                # Calculate FPS more frequently for better feedback
-                if frame_count % 15 == 0:  # Update FPS every 15 frames
-                    elapsed_time = time.time() - start_time
-                    fps = frame_count / elapsed_time
-                    socketio.emit('fps_update', {'fps': f'{fps:.1f}', 'stream_path': stop_flag_key})
+                # Keep only recent processing times
+                if len(processing_times) > 30:
+                    processing_times.pop(0)
                 
-                # Encode frame for web display with optimization
+                processed_count += 1
+                
+                # Calculate and emit performance metrics
+                if processed_count % 15 == 0:
+                    current_time = time.time()
+                    avg_process_time = sum(processing_times) / len(processing_times) if processing_times else 0
+                    actual_fps = processed_count / (current_time - start_time)
+                    
+                    # GPU monitoring
+                    gpu_info = {}
+                    if torch.cuda.is_available():
+                        try:
+                            gpu_info = {
+                                'gpu_used': True,
+                                'gpu_name': torch.cuda.get_device_name(0),
+                                'gpu_memory_used': f"{torch.cuda.memory_allocated(0) / 1024**3:.2f} GB",
+                                'gpu_memory_total': f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
+                            }
+                            # Try to get GPU utilization if pynvml is available
+                            try:
+                                import pynvml
+                                pynvml.nvmlInit()
+                                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                                utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                                gpu_info['gpu_utilization'] = f"{utilization.gpu}%"
+                            except:
+                                gpu_info['gpu_utilization'] = "N/A (pynvml not available)"
+                        except Exception as e:
+                            gpu_info = {
+                                'gpu_used': True,
+                                'gpu_name': 'GPU Available',
+                                'gpu_memory_used': 'N/A',
+                                'gpu_memory_total': 'N/A',
+                                'gpu_utilization': 'N/A',
+                                'error': str(e)
+                            }
+                    else:
+                        gpu_info = {
+                            'gpu_used': False,
+                            'message': 'CUDA not available'
+                        }
+                    
+                    socketio.emit('fps_update', {
+                        'fps': f'{actual_fps:.1f}', 
+                        'stream_path': stop_flag_key,
+                        'lag': '0.00s',  # No lag with latest frame processing
+                        'avg_process_time': f'{avg_process_time*1000:.1f}ms',
+                        'gpu_info': gpu_info
+                    })
+                
+                # Encode and send frame
                 try:
-                    # Resize frame for web display (optimized size)
+                    # Resize frame for web display
                     height, width = processed_frame.shape[:2]
-                    max_width = 640  # Reduced for better performance
+                    max_width = 640
                     if width > max_width:
                         scale = max_width / width
                         new_width = int(width * scale)
                         new_height = int(height * scale)
                         processed_frame = cv2.resize(processed_frame, (new_width, new_height))
                     
-                    # Encode to JPEG with optimized quality
+                    # Encode to JPEG
                     _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     frame_data = base64.b64encode(buffer).decode('utf-8')
                     
-                    # Send frame to web client with stream_path
+                    # Send frame to web client
                     socketio.emit('frame', {'image': frame_data, 'stream_path': stop_flag_key})
                     
                 except Exception as e:
-                    print(f"Error encoding frame: {e}")
+                    print(f"❌ Error encoding/sending frame: {e}")
                 
-                # Adaptive frame rate control
-                target_frame_time = 1.0 / max_fps
-                elapsed = time.time() - start_time
-                frame_time = elapsed / frame_count if frame_count > 0 else 0
-                
-                if frame_time < target_frame_time:
-                    time.sleep(target_frame_time - frame_time)
+                # No sleep - maximum FPS for powerful systems
                 
         except Exception as e:
-            print(f"Error in detection loop: {e}")
+            print(f"❌ Error in detection loop: {e}")
+            import traceback
+            traceback.print_exc()
             socketio.emit('error', {'message': f'Detection error: {str(e)}', 'stream_path': stop_flag_key})
         
         finally:
@@ -429,14 +506,11 @@ def start_detection():
         stream_path = data.get('stream_path')  # unique key for the stream
         confidence = float(data.get('confidence', 0.25))
         iou = float(data.get('iou', 0.45))
-        model = data.get('model', '/Users/majeed/Downloads/yolo3d/yolov8n.pt')
+        model = data.get('model', 'data/other_models/default_model/yolov8n.pt')
+        boat_only_filter = data.get('boat_only_filter', True)  # Default to boat-only filtering
         
         # Debug logging
-        print(f"🔍 START DETECTION REQUEST:")
-        print(f"   RTMP URL: {rtmp_url}")
-        print(f"   Stream Path: {stream_path}")
-        print(f"   Current active streams: {list(stream_processors.keys())}")
-        print(f"   Total requests so far: {len(stream_processors) + 1}")
+        print(f"🔍 Starting detection for: {stream_path}")
         
         if not rtmp_url or not stream_path:
             return jsonify({'error': 'RTMP URL and stream_path are required'}), 400
@@ -466,7 +540,8 @@ def start_detection():
             'depth_size': 'small',
             'device': 'auto',
             'depth_range': [1.0, 50.0],
-            'smooth_depth': True
+            'smooth_depth': True,
+            'filter_boat_only': boat_only_filter # Add the new configuration
         }
         current_configs[stream_path] = config
         # Start new detection thread for this stream
@@ -582,7 +657,6 @@ def get_gpu_status():
 def handle_connect():
     """Handle client connection."""
     print('Client connected')
-    emit('status', {'message': 'Connected to detection server'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -596,7 +670,7 @@ if __name__ == '__main__':
     
     print("Starting Object Detection Dashboard...")
     print(f"Detection modules available: {DETECTION_AVAILABLE}")
-    print("Open your browser and go to: http://localhost:7070")
+    print("Open your browser and go to: http://localhost:7080")
     
     # Use debug=False for production/Docker environment
-    socketio.run(app, host='0.0.0.0', port=7070, debug=False, allow_unsafe_werkzeug=True) 
+    socketio.run(app, host='0.0.0.0', port=7080, debug=False, allow_unsafe_werkzeug=True) 

@@ -68,7 +68,7 @@ def check_models():
     """Check if model files exist."""
     model_paths = [
         'data/other_models/default_model/yolov8n.pt',
-        'data/other_models/cross_model/weights/best.pt',
+        'data/other_models/cross_model/weights/best.onnx',
         'data/other_models/Infrared/weights/best.onnx'
     ]
     

@@ -1,6 +1,8 @@
 """
 Depth estimation model using either MiDaS or Depth Anything v2 with GPU optimization.
 """
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 import os
 import torch

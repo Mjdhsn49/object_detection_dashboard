@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile.gpu
     container_name: object-detection-dashboard-gpu
     ports:
-      - "7070:7070"
+      - "7080:7080"
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - PYTHONPATH=/app
@@ -27,7 +27,7 @@ services:
       - ./output:/app/output
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7070/api/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:7080/api/status"]
       interval: 30s
       timeout: 10s
       retries: 3
