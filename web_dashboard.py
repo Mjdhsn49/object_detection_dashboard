@@ -8,7 +8,7 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 # Set default stream host environment variable
 if 'STREAM_HOST' not in os.environ:
-    os.environ['STREAM_HOST'] = 'http://simulator.safenavsystem.com/'
+    os.environ['STREAM_HOST'] = 'http://192.168.128.209:5000'
 
 import sys
 import time
@@ -990,25 +990,32 @@ def available_streams():
     """Fetch available RTMP streams from the simulator."""
     try:
         # Get base URL from query parameter or use default
-        base_url = request.args.get('base_url', 'http://simulator.safenavsystem.com')
+        base_url = request.args.get('base_url', 'http://192.168.128.209:5000')
         
-        # Parse the base URL to extract the server domain
+        # Parse the base URL to extract the server domain and port
         if base_url.startswith('http://'):
-            server_domain = base_url.replace('http://', '')
+            server_part = base_url.replace('http://', '')
         elif base_url.startswith('https://'):
-            server_domain = base_url.replace('https://', '')
+            server_part = base_url.replace('https://', '')
         elif base_url.startswith('rtmp://'):
-            server_domain = base_url.replace('rtmp://', '')
+            server_part = base_url.replace('rtmp://', '')
         elif base_url.startswith('rtmps://'):
-            server_domain = base_url.replace('rtmps://', '')
+            server_part = base_url.replace('rtmps://', '')
         else:
-            server_domain = base_url
+            server_part = base_url
         
         # Remove trailing slash and any path
-        server_domain = server_domain.split('/')[0]
+        server_part = server_part.split('/')[0]
         
-        # Construct HTTP API URL for stream parameters
-        stream_params_url = f"http://{server_domain}/stream_params"
+        # Split server part into domain and port
+        if ':' in server_part:
+            server_domain, port = server_part.split(':', 1)
+        else:
+            server_domain = server_part
+            port = '5000'  # Default port if not specified
+        
+        # Construct HTTP API URL for stream parameters (with port)
+        stream_params_url = f"http://{server_domain}:{port}/stream_params"
         
         print(f"Fetching streams from: {stream_params_url}")
         
@@ -1016,9 +1023,9 @@ def available_streams():
         resp.raise_for_status()
         streams = resp.json()
         
-        # Add server domain to each stream for RTMP URL construction
+        # Add server domain (without port) to each stream for RTMP URL construction
         for stream in streams:
-            stream['server_domain'] = server_domain
+            stream['server_domain'] = server_domain  # RTMP URLs will use domain without port
         
         return jsonify({'streams': streams})
     except Exception as e:

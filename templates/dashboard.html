@@ -333,10 +333,12 @@
             <h2>Global Controls</h2>
             <div class="global-controls">
                 <div class="control-group">
-                    <label>Base URL:</label>
+                    <label>Stream Host URL:</label>
                     <div style="display: flex; gap: 8px; align-items: center;">
-                        <input type="text" id="base-url" value="rtmp://simulator.safenavsystem.com" placeholder="Enter RTMP base URL" style="flex: 1;">
+                        <input type="text" id="base-url" value="http://192.168.128.209:5000" placeholder="Enter HTTP base URL (e.g., http://192.168.128.209:5000)" style="flex: 1;">
                         <button class="btn btn-primary" id="refresh-streams-btn" style="padding: 8px 12px; font-size: 0.9em;">🔄</button>
+                    </div>
+                    <small style="color: #666; font-size: 0.85em;">HTTP API: {host}:{port}/stream_params | RTMP: {host}{stream_path}</small>
                     </div>
                 </div>
                 <div class="control-group">
@@ -487,20 +489,28 @@
             const baseUrl = document.getElementById('base-url').value.trim();
             if (!baseUrl) return;
             
-            // Extract server domain from base URL
-            let serverDomain = baseUrl;
+            // Parse the base URL to extract server domain and port
+            let serverPart = baseUrl;
             if (baseUrl.startsWith('http://')) {
-                serverDomain = baseUrl.replace('http://', '');
+                serverPart = baseUrl.replace('http://', '');
             } else if (baseUrl.startsWith('https://')) {
-                serverDomain = baseUrl.replace('https://', '');
+                serverPart = baseUrl.replace('https://', '');
             } else if (baseUrl.startsWith('rtmp://')) {
-                serverDomain = baseUrl.replace('rtmp://', '');
+                serverPart = baseUrl.replace('rtmp://', '');
             } else if (baseUrl.startsWith('rtmps://')) {
-                serverDomain = baseUrl.replace('rtmps://', '');
+                serverPart = baseUrl.replace('rtmps://', '');
             }
             
             // Remove trailing slash and any path
-            serverDomain = serverDomain.split('/')[0];
+            serverPart = serverPart.split('/')[0];
+            
+            // Split server part into domain and port
+            let serverDomain;
+            if (serverPart.includes(':')) {
+                [serverDomain] = serverPart.split(':', 2);
+            } else {
+                serverDomain = serverPart;
+            }
             
             Object.values(streamState).forEach(stream => {
                 const rtmpUrl = `rtmp://${serverDomain}${stream.stream_path}`;
@@ -624,30 +634,39 @@
         // Fetch available streams and build UI
         async function loadStreams() {
             try {
-                const baseUrl = document.getElementById('base-url').value.trim() || 'rtmp://simulator.safenavsystem.com';
+                const baseUrl = document.getElementById('base-url').value.trim() || 'http://192.168.128.209:5000';
                 
                 // Clear existing stream state and UI
                 Object.keys(streamState).forEach(key => delete streamState[key]);
                 multiVideoContainer.innerHTML = '';
                 updateSystemStatus();
                 
-                // Extract server domain from base URL
-                let serverDomain = baseUrl;
+                // Parse the base URL to extract server domain and port
+                let serverPart = baseUrl;
                 if (baseUrl.startsWith('http://')) {
-                    serverDomain = baseUrl.replace('http://', '');
+                    serverPart = baseUrl.replace('http://', '');
                 } else if (baseUrl.startsWith('https://')) {
-                    serverDomain = baseUrl.replace('https://', '');
+                    serverPart = baseUrl.replace('https://', '');
                 } else if (baseUrl.startsWith('rtmp://')) {
-                    serverDomain = baseUrl.replace('rtmp://', '');
+                    serverPart = baseUrl.replace('rtmp://', '');
                 } else if (baseUrl.startsWith('rtmps://')) {
-                    serverDomain = baseUrl.replace('rtmps://', '');
+                    serverPart = baseUrl.replace('rtmps://', '');
                 }
                 
                 // Remove trailing slash and any path
-                serverDomain = serverDomain.split('/')[0];
+                serverPart = serverPart.split('/')[0];
                 
-                // Construct HTTP API URL
-                const apiUrl = `http://${serverDomain}/stream_params`;
+                // Split server part into domain and port
+                let serverDomain, port;
+                if (serverPart.includes(':')) {
+                    [serverDomain, port] = serverPart.split(':', 2);
+                } else {
+                    serverDomain = serverPart;
+                    port = '5000'; // Default port if not specified
+                }
+                
+                // Construct HTTP API URL (with port)
+                const apiUrl = `http://${serverDomain}:${port}/stream_params`;
                 
                 const resp = await fetch(`/api/available_streams?base_url=${encodeURIComponent(apiUrl)}`);
                 const data = await resp.json();
