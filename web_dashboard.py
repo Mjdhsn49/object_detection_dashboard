@@ -102,10 +102,9 @@ class StreamProcessor:
                     print("⚠️ CUDA is not available. Using CPU for all models.")
             print(f"Initializing models on device: {device}")
             
-            # Only allow four local models (relative paths for Docker)
+            # Only allow three local models (relative paths for Docker)
             allowed_models = [
                 'data/other_models/default_model/yolov8n.pt',
-                'data/other_models/cross_model/weights/best.onnx',
                 'data/other_models/Infrared/weights/best.pt',
                 'data/other_models/singapore/best.pt'
             ]
